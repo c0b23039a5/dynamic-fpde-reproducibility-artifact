@@ -1,0 +1,34 @@
+{
+  "input": "results_precomputed",
+  "n_summary_rows_raw": 4320,
+  "n_summary_rows_reported_methods": 2880,
+  "n_tasks": 72,
+  "n_seeds": 10,
+  "methods": [
+    "Hyb-FPDE",
+    "AIME",
+    "SHAP",
+    "LIME"
+  ],
+  "outputs": [
+    "generated_tex/appendix_taskwise_combined_scores_by_subject.tex",
+    "generated_tex/lambda_distribution.tex",
+    "generated_tex/main_results_subject_area_balanced.tex",
+    "generated_tex/reproducibility_processing_text.tex",
+    "generated_tex/stat_tests.tex",
+    "generated_tex/subject_area_combined_scores.tex",
+    "generated_tex/subject_area_winner_counts.tex",
+    "generated_tex/task_weighted_results.tex",
+    "generated_tex/taskwise_sd_summary.tex",
+    "generated_tex/taskwise_winner_counts.tex",
+    "processed_csv/lambda_selected_distribution.csv",
+    "processed_csv/paired_wilcoxon_tests.csv",
+    "processed_csv/subject_area_winner_counts.csv",
+    "processed_csv/subject_balanced_seed_method.csv",
+    "processed_csv/summary_by_task_seed_filtered.csv",
+    "processed_csv/task_balanced_seed_method.csv",
+    "processed_csv/taskwise_combined_score_mean_sd.csv",
+    "processed_csv/taskwise_winner_counts.csv",
+    "manifest.json"
+  ]
+}

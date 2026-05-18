@@ -1,0 +1,17 @@
+\begin{table*}[!tbp]
+    \caption{Descriptive paired Wilcoxon signed-rank tests on the combined score over task--seed pairs. Positive mean differences indicate that the reference method is better than the compared method.}
+    \label{tab:stat_tests}
+    \centering
+    \begin{tabular}{llccccc}
+        \toprule
+        Reference & Compared method & Mean diff. & Wins & Losses & Ties & $p_{\mathrm{Holm}}$  \\
+        \midrule
+        Hyb-FPDE & AIME & -0.0196 & 302 & 416 & 2 & $5.45\times 10^{-25}$ \\
+        Hyb-FPDE & SHAP & 0.0193 & 335 & 385 & 0 & 0.039 \\
+        Hyb-FPDE & LIME & 0.2515 & 706 & 14 & 0 & $9.89\times 10^{-118}$ \\
+        AIME & SHAP & 0.0389 & 353 & 367 & 0 & $1.21\times 10^{-7}$ \\
+        AIME & LIME & 0.2711 & 711 & 9 & 0 & $1.54\times 10^{-118}$ \\
+        SHAP & LIME & 0.2322 & 603 & 117 & 0 & $4.08\times 10^{-94}$ \\
+        \bottomrule
+    \end{tabular}
+\end{table*}

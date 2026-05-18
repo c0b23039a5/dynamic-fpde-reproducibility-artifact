@@ -1,0 +1,289 @@
+subject_area,subject_subarea,task_id,dataset_name_mapped,method_display,combined_mean,combined_sd,lambda_mean,lambda_sd
+Biology,Genomics and molecular biology,45,splice,AIME,0.8061687450314672,0.015717553989509477,0.75,0.09718253158075503
+Biology,Genomics and molecular biology,45,splice,Hyb-FPDE,0.7808852300814967,0.015204299739865496,0.75,0.09718253158075503
+Biology,Genomics and molecular biology,45,splice,LIME,0.20920055157001075,0.006174184776486579,0.75,0.09718253158075503
+Biology,Genomics and molecular biology,45,splice,SHAP,0.8616412956857357,0.00896003274202784,0.75,0.09718253158075503
+Biology,Genomics and molecular biology,167140,dna,AIME,0.7372727115062804,0.003623610579719525,0.25,0.21213203435596423
+Biology,Genomics and molecular biology,167140,dna,Hyb-FPDE,0.7237758118936779,0.0038308107230358057,0.25,0.21213203435596423
+Biology,Genomics and molecular biology,167140,dna,LIME,0.3019855731866101,0.004708705016829251,0.25,0.21213203435596423
+Biology,Genomics and molecular biology,167140,dna,SHAP,0.7384106740578158,0.0036626071428251332,0.25,0.21213203435596423
+Biology,Molecular bioactivity,9910,Bioresponse,AIME,0.6534828044290069,0.02133273260212729,0.43,0.4137900702315393
+Biology,Molecular bioactivity,9910,Bioresponse,Hyb-FPDE,0.6627219315433452,0.02051380247401047,0.43,0.4137900702315393
+Biology,Molecular bioactivity,9910,Bioresponse,LIME,0.3207995022232271,0.05070047492823263,0.43,0.4137900702315393
+Biology,Molecular bioactivity,9910,Bioresponse,SHAP,0.44069889812478513,0.02933961426374034,0.43,0.4137900702315393
+Biology,Plant disease and remote sensing,146820,wilt,AIME,0.5890564412467765,0.008549845690773328,0.07,0.08232726023485647
+Biology,Plant disease and remote sensing,146820,wilt,Hyb-FPDE,0.589241700397582,0.008844488612922231,0.07,0.08232726023485647
+Biology,Plant disease and remote sensing,146820,wilt,LIME,0.35877777360388097,0.015964531952390174,0.07,0.08232726023485647
+Biology,Plant disease and remote sensing,146820,wilt,SHAP,0.35903893180123747,0.016997479260232134,0.07,0.08232726023485647
+Biology,Protein expression,146800,MiceProtein,AIME,0.7947290631556874,0.007587065013553131,0.0,0.0
+Biology,Protein expression,146800,MiceProtein,Hyb-FPDE,0.7417058087815861,0.009977018930704993,0.0,0.0
+Biology,Protein expression,146800,MiceProtein,LIME,0.4102417059476817,0.01775736773249774,0.0,0.0
+Biology,Protein expression,146800,MiceProtein,SHAP,0.8665483833200966,0.007949504347858058,0.0,0.0
+Business,Credit and finance,29,credit-approval,AIME,0.6832023874869718,0.01596093187436914,0.44000000000000006,0.44771022374348846
+Business,Credit and finance,29,credit-approval,Hyb-FPDE,0.6775072038243395,0.013321899396191179,0.44000000000000006,0.44771022374348846
+Business,Credit and finance,29,credit-approval,LIME,0.22385450075540078,0.014636848534315603,0.44000000000000006,0.44771022374348846
+Business,Credit and finance,29,credit-approval,SHAP,0.39983761780321936,0.014103590293900126,0.44000000000000006,0.44771022374348846
+Business,Credit and finance,31,credit-g,AIME,0.6144707509030239,0.02503807106092186,0.5900000000000001,0.41486276177925524
+Business,Credit and finance,31,credit-g,Hyb-FPDE,0.6051714186178652,0.023685710219810904,0.5900000000000001,0.41486276177925524
+Business,Credit and finance,31,credit-g,LIME,0.18183267404300846,0.03342060776538541,0.5900000000000001,0.41486276177925524
+Business,Credit and finance,31,credit-g,SHAP,0.48520984287594376,0.021256717703397713,0.5900000000000001,0.41486276177925524
+Business,Donation behavior and service analytics,10101,blood-transfusion-service-center,AIME,0.4831267777801882,0.013556592041450844,0.55,0.38369548110737794
+Business,Donation behavior and service analytics,10101,blood-transfusion-service-center,Hyb-FPDE,0.48235259975575867,0.013125133069125485,0.55,0.38369548110737794
+Business,Donation behavior and service analytics,10101,blood-transfusion-service-center,LIME,0.33712602052960083,0.012342478569390658,0.55,0.38369548110737794
+Business,Donation behavior and service analytics,10101,blood-transfusion-service-center,SHAP,0.3634233368586183,0.008515472659232333,0.55,0.38369548110737794
+Business,Energy market systems,219,electricity,AIME,0.5358952585834444,0.014101266243024884,0.04,0.06992058987801011
+Business,Energy market systems,219,electricity,Hyb-FPDE,0.5269374149093771,0.018942245988224148,0.04,0.06992058987801011
+Business,Energy market systems,219,electricity,LIME,0.28012951024450483,0.007974358221283869,0.04,0.06992058987801011
+Business,Energy market systems,219,electricity,SHAP,0.3388139892497431,0.011960938712748583,0.04,0.06992058987801011
+Business,Financial market prediction,167120,numerai28.6,AIME,0.27807197765881864,0.001973377570817886,0.49000000000000005,0.21317702607092645
+Business,Financial market prediction,167120,numerai28.6,Hyb-FPDE,0.27885888157994526,0.001915682028601299,0.49000000000000005,0.21317702607092645
+Business,Financial market prediction,167120,numerai28.6,LIME,0.26678629386305186,0.002365948471810377,0.49000000000000005,0.21317702607092645
+Business,Financial market prediction,167120,numerai28.6,SHAP,0.2660290733692442,0.002238557299240267,0.49000000000000005,0.21317702607092645
+Business,Industry and economic activity text classification,9981,cnae-9,AIME,0.8497121199942285,0.012944980544451158,0.6900000000000001,0.4771442828607157
+Business,Industry and economic activity text classification,9981,cnae-9,Hyb-FPDE,0.60003246580561,0.04510328618022735,0.6900000000000001,0.4771442828607157
+Business,Industry and economic activity text classification,9981,cnae-9,LIME,0.37258482826696865,0.046088327743333095,0.6900000000000001,0.4771442828607157
+Business,Industry and economic activity text classification,9981,cnae-9,SHAP,0.6651323762871324,0.06371858643658906,0.6900000000000001,0.4771442828607157
+Business,"Marketing, sales, and customer analytics",14965,bank-marketing,AIME,0.6742048393406204,0.01373754292813261,0.99,0.0316227766016838
+Business,"Marketing, sales, and customer analytics",14965,bank-marketing,Hyb-FPDE,0.6357671568493244,0.014414688817693576,0.99,0.0316227766016838
+Business,"Marketing, sales, and customer analytics",14965,bank-marketing,LIME,0.18985890363324961,0.005366035286582968,0.99,0.0316227766016838
+Business,"Marketing, sales, and customer analytics",14965,bank-marketing,SHAP,0.22385836523791416,0.010519465211231949,0.99,0.0316227766016838
+Business,"Marketing, sales, and customer analytics",125920,dresses-sales,AIME,0.5887765765137003,0.023112848708260376,0.6900000000000001,0.2024845673131659
+Business,"Marketing, sales, and customer analytics",125920,dresses-sales,Hyb-FPDE,0.5942336896669932,0.01956648518622722,0.6900000000000001,0.2024845673131659
+Business,"Marketing, sales, and customer analytics",125920,dresses-sales,LIME,0.13714140357942411,0.020965907333150232,0.6900000000000001,0.2024845673131659
+Business,"Marketing, sales, and customer analytics",125920,dresses-sales,SHAP,0.27895387389134524,0.017423458642214024,0.6900000000000001,0.2024845673131659
+Business,"Marketing, sales, and customer analytics",167141,churn,AIME,0.4659761550850317,0.013686630921058245,0.64,0.4060651288757616
+Business,"Marketing, sales, and customer analytics",167141,churn,Hyb-FPDE,0.42498797228234686,0.012204988700562146,0.64,0.4060651288757616
+Business,"Marketing, sales, and customer analytics",167141,churn,LIME,0.31180116792583223,0.020373029856615057,0.64,0.4060651288757616
+Business,"Marketing, sales, and customer analytics",167141,churn,SHAP,0.4436560906745555,0.022036058016938042,0.64,0.4060651288757616
+Climate and Environment,"Climate, ecology, and environment",2079,eucalyptus,AIME,0.6507520524029872,0.03423466720749342,0.41,0.2998147576235847
+Climate and Environment,"Climate, ecology, and environment",2079,eucalyptus,Hyb-FPDE,0.6355979359411109,0.018907261966781316,0.41,0.2998147576235847
+Climate and Environment,"Climate, ecology, and environment",2079,eucalyptus,LIME,0.32264729034486456,0.025679051402086192,0.41,0.2998147576235847
+Climate and Environment,"Climate, ecology, and environment",2079,eucalyptus,SHAP,0.7129407994027082,0.02440642545051438,0.41,0.2998147576235847
+Climate and Environment,"Climate, ecology, and environment",9978,ozone-level-8hr,AIME,0.5142011882196011,0.004799433503906337,0.04,0.06992058987801011
+Climate and Environment,"Climate, ecology, and environment",9978,ozone-level-8hr,Hyb-FPDE,0.514366285629357,0.004955802203634311,0.04,0.06992058987801011
+Climate and Environment,"Climate, ecology, and environment",9978,ozone-level-8hr,LIME,0.4855378415910646,0.0029897695148740264,0.04,0.06992058987801011
+Climate and Environment,"Climate, ecology, and environment",9978,ozone-level-8hr,SHAP,0.44273809270670145,0.00919887537838051,0.04,0.06992058987801011
+Climate and Environment,"Climate, ecology, and environment",146819,climate-model-simulation-crashes,AIME,0.5478470993416341,0.014911569781409317,0.08,0.09189365834726813
+Climate and Environment,"Climate, ecology, and environment",146819,climate-model-simulation-crashes,Hyb-FPDE,0.5478907988449575,0.015183727898095458,0.08,0.09189365834726813
+Climate and Environment,"Climate, ecology, and environment",146819,climate-model-simulation-crashes,LIME,0.4873439756702636,0.005313479060194078,0.08,0.09189365834726813
+Climate and Environment,"Climate, ecology, and environment",146819,climate-model-simulation-crashes,SHAP,0.5097737336797021,0.020863118881522414,0.08,0.09189365834726813
+Climate and Environment,Remote sensing and satellite imagery,2074,satimage,AIME,0.6624559075374167,0.010639073086061681,0.9199999999999999,0.1873795909674026
+Climate and Environment,Remote sensing and satellite imagery,2074,satimage,Hyb-FPDE,0.5495719819086424,0.011965231867648873,0.9199999999999999,0.1873795909674026
+Climate and Environment,Remote sensing and satellite imagery,2074,satimage,LIME,0.43283984460763636,0.01491568242157097,0.9199999999999999,0.1873795909674026
+Climate and Environment,Remote sensing and satellite imagery,2074,satimage,SHAP,0.760821200684537,0.008667018946525051,0.9199999999999999,0.1873795909674026
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,12,mfeat-factors,AIME,0.8880807664472673,0.005490592784632847,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,12,mfeat-factors,Hyb-FPDE,0.8664655033868376,0.005503597483770059,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,12,mfeat-factors,LIME,0.507218721136962,0.02329902487902479,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,12,mfeat-factors,SHAP,0.9163674247539777,0.00469369468675113,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,14,mfeat-fourier,AIME,0.830935379125242,0.006583743904337747,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,14,mfeat-fourier,Hyb-FPDE,0.7842502577029904,0.01355939224154425,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,14,mfeat-fourier,LIME,0.6206038431398014,0.01860868388839786,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,14,mfeat-fourier,SHAP,0.874611594543736,0.0046812440695564025,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,16,mfeat-karhunen,AIME,0.8774375277886423,0.005389453029149896,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,16,mfeat-karhunen,Hyb-FPDE,0.8361263674819229,0.008605758665713392,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,16,mfeat-karhunen,LIME,0.416982247210876,0.012039352007531395,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,16,mfeat-karhunen,SHAP,0.8970151748371841,0.004601032570662695,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,18,mfeat-morphological,AIME,0.5742000302590304,0.018207541963569284,0.4,0.47842333648024415
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,18,mfeat-morphological,Hyb-FPDE,0.5096081228545296,0.016416505941682775,0.4,0.47842333648024415
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,18,mfeat-morphological,LIME,0.552730803504789,0.030760548202101213,0.4,0.47842333648024415
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,18,mfeat-morphological,SHAP,0.6588880415610406,0.016078503326832624,0.4,0.47842333648024415
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,22,mfeat-zernike,AIME,0.7530271830315824,0.008114530868647593,0.09,0.1523883926754995
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,22,mfeat-zernike,Hyb-FPDE,0.6968760906881608,0.012690333948026752,0.09,0.1523883926754995
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,22,mfeat-zernike,LIME,0.4955701812973879,0.016175763349923645,0.09,0.1523883926754995
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,22,mfeat-zernike,SHAP,0.808594711229078,0.0054429131160249515,0.09,0.1523883926754995
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,53,vehicle,AIME,0.6401325439752121,0.0098867322375248,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,53,vehicle,Hyb-FPDE,0.6609229874535483,0.015180812949098834,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,53,vehicle,LIME,0.462847225523719,0.0451318509772284,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,53,vehicle,SHAP,0.758333010750684,0.01571789074514678,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,125922,texture,AIME,0.7779287319007897,0.009904991394591549,0.030000000000000006,0.0483045891539648
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,125922,texture,Hyb-FPDE,0.7592558613745628,0.01120821960599236,0.030000000000000006,0.0483045891539648
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,125922,texture,LIME,0.4961082858918798,0.012043299268110078,0.030000000000000006,0.0483045891539648
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,125922,texture,SHAP,0.8900575864849438,0.007342703748512335,0.030000000000000006,0.0483045891539648
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146822,segment,AIME,0.726278231750907,0.008578797498915249,0.5,0.44472213547087774
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146822,segment,Hyb-FPDE,0.6400582446744407,0.011573558480553648,0.5,0.44472213547087774
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146822,segment,LIME,0.48813718602280376,0.01226319971536718,0.5,0.44472213547087774
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146822,segment,SHAP,0.7909281761429883,0.009667341100285613,0.5,0.44472213547087774
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146824,mfeat-pixel,AIME,0.833420771458511,0.007310512977447092,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146824,mfeat-pixel,Hyb-FPDE,0.7727760000675911,0.010163185560584405,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146824,mfeat-pixel,LIME,0.4031901377082702,0.012724255485152013,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146824,mfeat-pixel,SHAP,0.8887328204113919,0.005274107716705383,0.0,0.0
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146825,Fashion-MNIST,AIME,0.6826469996940789,0.007833725361601217,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146825,Fashion-MNIST,Hyb-FPDE,0.6645352281795179,0.01007709812066264,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146825,Fashion-MNIST,LIME,0.27865609243344924,0.0065990641876055986,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,146825,Fashion-MNIST,SHAP,0.858739302872149,0.008729164288393215,0.01,0.03162277660168379
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,167124,CIFAR_10,AIME,0.3849029734548708,0.008134278196489155,0.11000000000000001,0.22827858224351907
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,167124,CIFAR_10,Hyb-FPDE,0.34587863890718695,0.008726082408158439,0.11000000000000001,0.22827858224351907
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,167124,CIFAR_10,LIME,0.20848464408824877,0.0060814578807631605,0.11000000000000001,0.22827858224351907
+Computer Science / Computer Vision,Computer Vision / image descriptors and natural images,167124,CIFAR_10,SHAP,0.5207699074667734,0.009458513554169186,0.11000000000000001,0.22827858224351907
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",6,letter,AIME,0.7810024919081571,0.004579149633643286,0.02,0.04216370213557839
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",6,letter,Hyb-FPDE,0.7086986509679158,0.0113806287662416,0.02,0.04216370213557839
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",6,letter,LIME,0.5252065109623965,0.0212924371469425,0.02,0.04216370213557839
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",6,letter,SHAP,0.8329406495143568,0.004598952868422191,0.02,0.04216370213557839
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",28,optdigits,AIME,0.8874636333733894,0.006535508083097013,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",28,optdigits,Hyb-FPDE,0.8510644378691495,0.009183207981831485,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",28,optdigits,LIME,0.36413043080720786,0.0199732560869462,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",28,optdigits,SHAP,0.9093246225371081,0.006676235822020084,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",32,pendigits,AIME,0.7634896119967176,0.0052516350717061846,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",32,pendigits,Hyb-FPDE,0.7062477006448791,0.015724565604018956,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",32,pendigits,LIME,0.4759211631023785,0.01461343445212905,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",32,pendigits,SHAP,0.8776857793045935,0.0028892139582474743,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",3573,mnist_784,AIME,0.8262209728732053,0.007101317920008063,0.5,0.5270462766947299
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",3573,mnist_784,Hyb-FPDE,0.759546479460232,0.010968742440040917,0.5,0.5270462766947299
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",3573,mnist_784,LIME,0.31893253847090314,0.005140339193851551,0.5,0.5270462766947299
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",3573,mnist_784,SHAP,0.8848344746968977,0.007029803435483404,0.5,0.5270462766947299
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",9964,semeion,AIME,0.7764035357982244,0.00976546880944249,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",9964,semeion,Hyb-FPDE,0.7433300195405769,0.013652085513461457,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",9964,semeion,LIME,0.3167471023611052,0.04209898329649601,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",9964,semeion,SHAP,0.8734762158785978,0.010176407600446608,0.0,0.0
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",167121,Devnagari-Script,AIME,0.711134768677865,0.012227307129142448,0.8099999999999999,0.3784471194529325
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",167121,Devnagari-Script,Hyb-FPDE,0.6048801469814458,0.009770500175813544,0.8099999999999999,0.3784471194529325
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",167121,Devnagari-Script,LIME,0.36782973624852394,0.006952416282941958,0.8099999999999999,0.3784471194529325
+Computer Science / Computer Vision,"Computer Vision / letters, digits, and scripts",167121,Devnagari-Script,SHAP,0.8239163591035163,0.010492696710815342,0.8099999999999999,0.3784471194529325
+Computer Science / Computer Vision,Image-derived authentication,10093,banknote-authentication,AIME,0.6093491931799722,0.006640124282858871,0.76,0.2988868236194653
+Computer Science / Computer Vision,Image-derived authentication,10093,banknote-authentication,Hyb-FPDE,0.6120023941755609,0.005269480312559587,0.76,0.2988868236194653
+Computer Science / Computer Vision,Image-derived authentication,10093,banknote-authentication,LIME,0.4703982984196566,0.011665664856709718,0.76,0.2988868236194653
+Computer Science / Computer Vision,Image-derived authentication,10093,banknote-authentication,SHAP,0.5138057046172547,0.006257873747814006,0.76,0.2988868236194653
+Computer Science / Other,NLP / authorship attribution,3549,analcatdata_authorship,AIME,0.7549358549394191,0.012741707823423125,0.0,0.0
+Computer Science / Other,NLP / authorship attribution,3549,analcatdata_authorship,Hyb-FPDE,0.7536797046123649,0.015605344312688027,0.0,0.0
+Computer Science / Other,NLP / authorship attribution,3549,analcatdata_authorship,LIME,0.3693690528009468,0.03993566739895174,0.0,0.0
+Computer Science / Other,NLP / authorship attribution,3549,analcatdata_authorship,SHAP,0.7722260926227145,0.01372255716140009,0.0,0.0
+Computer Science / Other,Software engineering quality,3902,pc4,AIME,0.545988486715168,0.00998739901152764,0.67,0.3301514803843836
+Computer Science / Other,Software engineering quality,3902,pc4,Hyb-FPDE,0.5491393868292374,0.011118509478902732,0.67,0.3301514803843836
+Computer Science / Other,Software engineering quality,3902,pc4,LIME,0.3704110797356396,0.02175534704652425,0.67,0.3301514803843836
+Computer Science / Other,Software engineering quality,3902,pc4,SHAP,0.3429282894014876,0.020414481880133062,0.67,0.3301514803843836
+Computer Science / Other,Software engineering quality,3903,pc3,AIME,0.4875887042734465,0.005629722538545164,0.32999999999999996,0.37431418769679453
+Computer Science / Other,Software engineering quality,3903,pc3,Hyb-FPDE,0.48802756993172725,0.005708450098922804,0.32999999999999996,0.37431418769679453
+Computer Science / Other,Software engineering quality,3903,pc3,LIME,0.47574334275664765,0.014285482970008354,0.32999999999999996,0.37431418769679453
+Computer Science / Other,Software engineering quality,3903,pc3,SHAP,0.3999318653270191,0.016696309217745557,0.32999999999999996,0.37431418769679453
+Computer Science / Other,Software engineering quality,3904,jm1,AIME,0.4491525284948321,0.007658209369956187,1.0,0.0
+Computer Science / Other,Software engineering quality,3904,jm1,Hyb-FPDE,0.4569841028770232,0.006584675012863645,1.0,0.0
+Computer Science / Other,Software engineering quality,3904,jm1,LIME,0.3800987645602222,0.017658275718329196,1.0,0.0
+Computer Science / Other,Software engineering quality,3904,jm1,SHAP,0.3436912493233734,0.006844888636089381,1.0,0.0
+Computer Science / Other,Software engineering quality,3913,kc2,AIME,0.4724097358283784,0.009072447581010933,0.72,0.38528488738133043
+Computer Science / Other,Software engineering quality,3913,kc2,Hyb-FPDE,0.47609811866121843,0.010056618663279195,0.72,0.38528488738133043
+Computer Science / Other,Software engineering quality,3913,kc2,LIME,0.44550808536420605,0.033729516088562395,0.72,0.38528488738133043
+Computer Science / Other,Software engineering quality,3913,kc2,SHAP,0.4124023033354649,0.029356744533992698,0.72,0.38528488738133043
+Computer Science / Other,Software engineering quality,3917,kc1,AIME,0.4563770434326691,0.014537657851533249,0.52,0.373571352696584
+Computer Science / Other,Software engineering quality,3917,kc1,Hyb-FPDE,0.45740211226199506,0.016781424785287966,0.52,0.373571352696584
+Computer Science / Other,Software engineering quality,3917,kc1,LIME,0.3938025801215957,0.03322448228487609,0.52,0.373571352696584
+Computer Science / Other,Software engineering quality,3917,kc1,SHAP,0.3561735313853006,0.027763250634127934,0.52,0.373571352696584
+Computer Science / Other,Software engineering quality,3918,pc1,AIME,0.5172974396025847,0.010994072439814534,0.33999999999999997,0.40606512887576157
+Computer Science / Other,Software engineering quality,3918,pc1,Hyb-FPDE,0.5179615148241268,0.011986619131223999,0.33999999999999997,0.40606512887576157
+Computer Science / Other,Software engineering quality,3918,pc1,LIME,0.4184039825981145,0.037241473223310465,0.33999999999999997,0.40606512887576157
+Computer Science / Other,Software engineering quality,3918,pc1,SHAP,0.3780317239284112,0.023730575663234298,0.33999999999999997,0.40606512887576157
+Computer Science / Other,Speech and language,3022,vowel,AIME,0.8100505336920782,0.008599908119287946,0.5700000000000001,0.2907843798341918
+Computer Science / Other,Speech and language,3022,vowel,Hyb-FPDE,0.6657030003450075,0.012697613435878274,0.5700000000000001,0.2907843798341918
+Computer Science / Other,Speech and language,3022,vowel,LIME,0.4583987163417008,0.01771597244987547,0.5700000000000001,0.2907843798341918
+Computer Science / Other,Speech and language,3022,vowel,SHAP,0.8420100948114959,0.006528671790303266,0.5700000000000001,0.2907843798341918
+Computer Science / Other,Speech and language,3481,isolet,AIME,0.8770419489586911,0.00677778562570722,0.0,0.0
+Computer Science / Other,Speech and language,3481,isolet,Hyb-FPDE,0.820795975532401,0.01221746475685529,0.0,0.0
+Computer Science / Other,Speech and language,3481,isolet,LIME,0.6203784053471103,0.02125243791933633,0.0,0.0
+Computer Science / Other,Speech and language,3481,isolet,SHAP,0.9338603037066802,0.005869711926792871,0.0,0.0
+Computer Science / Other,Speech and language,9952,phoneme,AIME,0.504137238283864,0.010342164009493627,0.64,0.4168666186896928
+Computer Science / Other,Speech and language,9952,phoneme,Hyb-FPDE,0.5045265161057483,0.009749108359588261,0.64,0.4168666186896928
+Computer Science / Other,Speech and language,9952,phoneme,LIME,0.4749391067418734,0.00817209137455664,0.64,0.4168666186896928
+Computer Science / Other,Speech and language,9952,phoneme,SHAP,0.42406817300952493,0.00728256997140163,0.64,0.4168666186896928
+Computer Science / Other,Symbolic reasoning and theorem proving,9985,first-order-theorem-proving,AIME,0.3789236506948418,0.017646436844183207,0.02,0.0421637021355784
+Computer Science / Other,Symbolic reasoning and theorem proving,9985,first-order-theorem-proving,Hyb-FPDE,0.36882416870145845,0.01688542105740746,0.02,0.0421637021355784
+Computer Science / Other,Symbolic reasoning and theorem proving,9985,first-order-theorem-proving,LIME,0.27823803024207755,0.016750865485554628,0.02,0.0421637021355784
+Computer Science / Other,Symbolic reasoning and theorem proving,9985,first-order-theorem-proving,SHAP,0.48472243254404346,0.014713715534566173,0.02,0.0421637021355784
+Computer Science / Other,Web entity resolution and record linkage,9977,nomao,AIME,0.6361571323595671,0.011908412627431204,0.05,0.15811388300841897
+Computer Science / Other,Web entity resolution and record linkage,9977,nomao,Hyb-FPDE,0.6409926043546591,0.01216153494714965,0.05,0.15811388300841897
+Computer Science / Other,Web entity resolution and record linkage,9977,nomao,LIME,0.4782547799729523,0.050619782001426826,0.05,0.15811388300841897
+Computer Science / Other,Web entity resolution and record linkage,9977,nomao,SHAP,0.5309234661515685,0.04381787860782953,0.05,0.15811388300841897
+Computer Science / Other,"Web, advertising, spam, and security",43,spambase,AIME,0.7278196009732225,0.012826178096178073,0.51,0.42544094772365293
+Computer Science / Other,"Web, advertising, spam, and security",43,spambase,Hyb-FPDE,0.7296410506768627,0.013317745544314079,0.51,0.42544094772365293
+Computer Science / Other,"Web, advertising, spam, and security",43,spambase,LIME,0.2147245756749483,0.01618713360677437,0.51,0.42544094772365293
+Computer Science / Other,"Web, advertising, spam, and security",43,spambase,SHAP,0.4546856366459032,0.014700177758693632,0.51,0.42544094772365293
+Computer Science / Other,"Web, advertising, spam, and security",14952,PhishingWebsites,AIME,0.7635593251084023,0.007974693612369016,0.9,0.18257418583505536
+Computer Science / Other,"Web, advertising, spam, and security",14952,PhishingWebsites,Hyb-FPDE,0.7660649347382563,0.008569337610007841,0.9,0.18257418583505536
+Computer Science / Other,"Web, advertising, spam, and security",14952,PhishingWebsites,LIME,0.22476638724056702,0.0074695455460046575,0.9,0.18257418583505536
+Computer Science / Other,"Web, advertising, spam, and security",14952,PhishingWebsites,SHAP,0.6562419787551089,0.011928990255434297,0.9,0.18257418583505536
+Computer Science / Other,"Web, advertising, spam, and security",167125,Internet-Advertisements,AIME,0.599332743293745,0.026924851647351433,0.16999999999999998,0.2626785107312739
+Computer Science / Other,"Web, advertising, spam, and security",167125,Internet-Advertisements,Hyb-FPDE,0.6035493745710199,0.028679645286334463,0.16999999999999998,0.2626785107312739
+Computer Science / Other,"Web, advertising, spam, and security",167125,Internet-Advertisements,LIME,0.4613555503407577,0.020356886824652344,0.16999999999999998,0.2626785107312739
+Computer Science / Other,"Web, advertising, spam, and security",167125,Internet-Advertisements,SHAP,0.5457077237559047,0.031680763096437414,0.16999999999999998,0.2626785107312739
+Engineering,Industrial manufacturing and fault detection,14954,cylinder-bands,AIME,0.6722440628355295,0.026611539563919668,0.6599999999999999,0.39777157040470124
+Engineering,Industrial manufacturing and fault detection,14954,cylinder-bands,Hyb-FPDE,0.6754884308062158,0.024557964509441074,0.6599999999999999,0.39777157040470124
+Engineering,Industrial manufacturing and fault detection,14954,cylinder-bands,LIME,0.2434048280451467,0.039299892406798424,0.6599999999999999,0.39777157040470124
+Engineering,Industrial manufacturing and fault detection,14954,cylinder-bands,SHAP,0.4973476691972009,0.025197888755186363,0.6599999999999999,0.39777157040470124
+Engineering,Industrial manufacturing and fault detection,146817,steel-plates-fault,AIME,0.5493617272874779,0.018961739420512592,0.22000000000000003,0.1549193338482967
+Engineering,Industrial manufacturing and fault detection,146817,steel-plates-fault,Hyb-FPDE,0.5933644492327819,0.01333667831994367,0.22000000000000003,0.1549193338482967
+Engineering,Industrial manufacturing and fault detection,146817,steel-plates-fault,LIME,0.3807913656388043,0.04090533484810776,0.22000000000000003,0.1549193338482967
+Engineering,Industrial manufacturing and fault detection,146817,steel-plates-fault,SHAP,0.7361015607667587,0.008068086534271556,0.22000000000000003,0.1549193338482967
+Engineering,"Sensors, gestures, robotics, and activity recognition",9960,wall-robot-navigation,AIME,0.6723591955320632,0.01847183812248859,0.13,0.21628170930011112
+Engineering,"Sensors, gestures, robotics, and activity recognition",9960,wall-robot-navigation,Hyb-FPDE,0.6432678121541351,0.024969293881299207,0.13,0.21628170930011112
+Engineering,"Sensors, gestures, robotics, and activity recognition",9960,wall-robot-navigation,LIME,0.3974188149388658,0.035935942284609355,0.13,0.21628170930011112
+Engineering,"Sensors, gestures, robotics, and activity recognition",9960,wall-robot-navigation,SHAP,0.8714828258134881,0.03342220260345282,0.13,0.21628170930011112
+Engineering,"Sensors, gestures, robotics, and activity recognition",14969,GesturePhaseSegmentationProcessed,AIME,0.43480296642512684,0.007224634254072373,0.06,0.09660917830792959
+Engineering,"Sensors, gestures, robotics, and activity recognition",14969,GesturePhaseSegmentationProcessed,Hyb-FPDE,0.4306778211718865,0.009296007691139217,0.06,0.09660917830792959
+Engineering,"Sensors, gestures, robotics, and activity recognition",14969,GesturePhaseSegmentationProcessed,LIME,0.26789555970792533,0.011729865754856622,0.06,0.09660917830792959
+Engineering,"Sensors, gestures, robotics, and activity recognition",14969,GesturePhaseSegmentationProcessed,SHAP,0.48966185965483894,0.009580508861539062,0.06,0.09660917830792959
+Engineering,"Sensors, gestures, robotics, and activity recognition",14970,har,AIME,0.745930331650016,0.01823059909877687,0.0,0.0
+Engineering,"Sensors, gestures, robotics, and activity recognition",14970,har,Hyb-FPDE,0.8305863486983197,0.013929965810060209,0.0,0.0
+Engineering,"Sensors, gestures, robotics, and activity recognition",14970,har,LIME,0.46917776414945483,0.017948510353191054,0.0,0.0
+Engineering,"Sensors, gestures, robotics, and activity recognition",14970,har,SHAP,0.9181301873259132,0.00944782240644694,0.0,0.0
+Games,Board and strategic games,3,kr-vs-kp,AIME,0.8537889905175309,0.006147815397388786,0.47000000000000003,0.3713339317768966
+Games,Board and strategic games,3,kr-vs-kp,Hyb-FPDE,0.849970833077864,0.005542030993499174,0.47000000000000003,0.3713339317768966
+Games,Board and strategic games,3,kr-vs-kp,LIME,0.16050514104116403,0.01106800936359462,0.47000000000000003,0.3713339317768966
+Games,Board and strategic games,3,kr-vs-kp,SHAP,0.5062238255564896,0.007632848932671936,0.47000000000000003,0.3713339317768966
+Games,Board and strategic games,49,tic-tac-toe,AIME,0.541322586620719,0.018906247418278323,0.76,0.2988868236194653
+Games,Board and strategic games,49,tic-tac-toe,Hyb-FPDE,0.5589202425188029,0.015063458940341657,0.76,0.2988868236194653
+Games,Board and strategic games,49,tic-tac-toe,LIME,0.16814010367079474,0.007121272073925852,0.76,0.2988868236194653
+Games,Board and strategic games,49,tic-tac-toe,SHAP,0.5986220410892451,0.01917848852481711,0.76,0.2988868236194653
+Games,Board and strategic games,146195,connect-4,AIME,0.6513472132687814,0.01257836413059725,0.9199999999999999,0.13165611772087665
+Games,Board and strategic games,146195,connect-4,Hyb-FPDE,0.6771781079898525,0.008978677409510978,0.9199999999999999,0.13165611772087665
+Games,Board and strategic games,146195,connect-4,LIME,0.04132591543286849,0.008637571858246542,0.9199999999999999,0.13165611772087665
+Games,Board and strategic games,146195,connect-4,SHAP,0.7273729949765338,0.005228198507955114,0.9199999999999999,0.13165611772087665
+Games,Board and strategic games,167119,jungle_chess_2pcs_raw_endgame_complete,AIME,0.6093692970864324,0.014337800221619436,0.36,0.23190036174568113
+Games,Board and strategic games,167119,jungle_chess_2pcs_raw_endgame_complete,Hyb-FPDE,0.5992515229133863,0.015162994926742434,0.36,0.23190036174568113
+Games,Board and strategic games,167119,jungle_chess_2pcs_raw_endgame_complete,LIME,0.42162453976498815,0.025419186150554655,0.36,0.23190036174568113
+Games,Board and strategic games,167119,jungle_chess_2pcs_raw_endgame_complete,SHAP,0.6314863231625429,0.009629364722677706,0.36,0.23190036174568113
+Health and Medicine,Clinical and medical diagnosis,15,breast-w,AIME,0.5971880572049528,0.01503705154456415,0.8699999999999999,0.24966644414765338
+Health and Medicine,Clinical and medical diagnosis,15,breast-w,Hyb-FPDE,0.6004185583403886,0.015783197510054935,0.8699999999999999,0.24966644414765338
+Health and Medicine,Clinical and medical diagnosis,15,breast-w,LIME,0.4432294978978801,0.04482261634163294,0.8699999999999999,0.24966644414765338
+Health and Medicine,Clinical and medical diagnosis,15,breast-w,SHAP,0.4573648095007779,0.03753582965048121,0.8699999999999999,0.24966644414765338
+Health and Medicine,Clinical and medical diagnosis,37,diabetes,AIME,0.5542437031848987,0.01694851153877355,0.29,0.35418137224371987
+Health and Medicine,Clinical and medical diagnosis,37,diabetes,Hyb-FPDE,0.5548434816121348,0.016773657140718237,0.29,0.35418137224371987
+Health and Medicine,Clinical and medical diagnosis,37,diabetes,LIME,0.4092052371439195,0.024505186245521216,0.29,0.35418137224371987
+Health and Medicine,Clinical and medical diagnosis,37,diabetes,SHAP,0.39216792881951634,0.018467080461695845,0.29,0.35418137224371987
+Health and Medicine,Clinical and medical diagnosis,3021,sick,AIME,0.5265700916189793,0.0030264630777013636,0.42000000000000004,0.3938414796731181
+Health and Medicine,Clinical and medical diagnosis,3021,sick,Hyb-FPDE,0.5288470586069975,0.004532616141018683,0.42000000000000004,0.3938414796731181
+Health and Medicine,Clinical and medical diagnosis,3021,sick,LIME,0.4772075868803438,0.0014193854724445082,0.42000000000000004,0.3938414796731181
+Health and Medicine,Clinical and medical diagnosis,3021,sick,SHAP,0.5040159273922412,0.006587101779777267,0.42000000000000004,0.3938414796731181
+Health and Medicine,Clinical and medical diagnosis,9946,wdbc,AIME,0.6551966852764963,0.014552459904136077,0.8099999999999999,0.32128215360057305
+Health and Medicine,Clinical and medical diagnosis,9946,wdbc,Hyb-FPDE,0.6609585044597046,0.017759354767402286,0.8099999999999999,0.32128215360057305
+Health and Medicine,Clinical and medical diagnosis,9946,wdbc,LIME,0.3757503689320645,0.05907661283718546,0.8099999999999999,0.32128215360057305
+Health and Medicine,Clinical and medical diagnosis,9946,wdbc,SHAP,0.3807408693944208,0.0435780509369997,0.8099999999999999,0.32128215360057305
+Health and Medicine,Clinical and medical diagnosis,9971,ilpd,AIME,0.4568574517803876,0.00951820558491725,0.16,0.23190036174568116
+Health and Medicine,Clinical and medical diagnosis,9971,ilpd,Hyb-FPDE,0.47222930030896737,0.008554429410635651,0.16,0.23190036174568116
+Health and Medicine,Clinical and medical diagnosis,9971,ilpd,LIME,0.35517362324992346,0.01403826069619147,0.16,0.23190036174568116
+Health and Medicine,Clinical and medical diagnosis,9971,ilpd,SHAP,0.3765523185003846,0.015463764706652481,0.16,0.23190036174568116
+Health and Medicine,Dental and medical survey data,3560,analcatdata_dmft,AIME,0.24004576741580935,0.011814469822310445,0.32,0.36757463338907265
+Health and Medicine,Dental and medical survey data,3560,analcatdata_dmft,Hyb-FPDE,0.23169791008510993,0.009187460363515828,0.32,0.36757463338907265
+Health and Medicine,Dental and medical survey data,3560,analcatdata_dmft,LIME,0.07541155709071612,0.010771090977110265,0.32,0.36757463338907265
+Health and Medicine,Dental and medical survey data,3560,analcatdata_dmft,SHAP,0.26107425975963344,0.009612094183924747,0.32,0.36757463338907265
+Health and Medicine,Reproductive health and socioeconomic survey data,23,cmc,AIME,0.47163117964964735,0.013398307270531913,0.22000000000000003,0.37357135269658404
+Health and Medicine,Reproductive health and socioeconomic survey data,23,cmc,Hyb-FPDE,0.4703737776099217,0.015677717431532356,0.22000000000000003,0.37357135269658404
+Health and Medicine,Reproductive health and socioeconomic survey data,23,cmc,LIME,0.15271508837353656,0.01964326251098439,0.22000000000000003,0.37357135269658404
+Health and Medicine,Reproductive health and socioeconomic survey data,23,cmc,SHAP,0.5322141201227863,0.012583027723305338,0.22000000000000003,0.37357135269658404
+Other,Rule-based decision-model benchmark,146821,car,AIME,0.5570323200779295,0.008672738598835857,0.6,0.45946829173634074
+Other,Rule-based decision-model benchmark,146821,car,Hyb-FPDE,0.5414372270660622,0.006150211054177841,0.6,0.45946829173634074
+Other,Rule-based decision-model benchmark,146821,car,LIME,0.3925660814385568,0.0020245226337202212,0.6,0.45946829173634074
+Other,Rule-based decision-model benchmark,146821,car,SHAP,0.5827956043822475,0.007327802131221181,0.6,0.45946829173634074
+Other,Synthetic benchmark,9976,madelon,AIME,0.620600623908844,0.010247703913405707,0.5,0.0
+Other,Synthetic benchmark,9976,madelon,Hyb-FPDE,0.6225209997497057,0.008014044528207033,0.5,0.0
+Other,Synthetic benchmark,9976,madelon,LIME,0.34453256468351895,0.03432884577397797,0.5,0.0
+Other,Synthetic benchmark,9976,madelon,SHAP,0.3979939720273805,0.025100552754575515,0.5,0.0
+Physics and Chemistry,Chemical molecular descriptors and biodegradation,9957,qsar-biodeg,AIME,0.6337968096831325,0.017659732567561898,0.1,0.19436506316151
+Physics and Chemistry,Chemical molecular descriptors and biodegradation,9957,qsar-biodeg,Hyb-FPDE,0.6351340130099997,0.017736527454474346,0.1,0.19436506316151
+Physics and Chemistry,Chemical molecular descriptors and biodegradation,9957,qsar-biodeg,LIME,0.34971438141581407,0.03153358643756948,0.1,0.19436506316151
+Physics and Chemistry,Chemical molecular descriptors and biodegradation,9957,qsar-biodeg,SHAP,0.43810121581196937,0.025816007456577396,0.1,0.19436506316151
+Social Sciences,Census and socioeconomic data,7592,adult,AIME,0.5763114086682795,0.022330259688420676,0.22000000000000003,0.4157990967870047
+Social Sciences,Census and socioeconomic data,7592,adult,Hyb-FPDE,0.5738289617972787,0.02366914596378693,0.22000000000000003,0.4157990967870047
+Social Sciences,Census and socioeconomic data,7592,adult,LIME,0.3750530862769756,0.02077342844504348,0.22000000000000003,0.4157990967870047
+Social Sciences,Census and socioeconomic data,7592,adult,SHAP,0.3335217120593177,0.018021025976613352,0.22000000000000003,0.4157990967870047
+Social Sciences,Psychological experimental data,11,balance-scale,AIME,0.6385458405558777,0.021173488919271823,0.9400000000000001,0.10749676997731397
+Social Sciences,Psychological experimental data,11,balance-scale,Hyb-FPDE,0.635591700965964,0.018380053408030294,0.9400000000000001,0.10749676997731397
+Social Sciences,Psychological experimental data,11,balance-scale,LIME,0.40465975020147915,0.05068688227365402,0.9400000000000001,0.10749676997731397
+Social Sciences,Psychological experimental data,11,balance-scale,SHAP,0.6446822242111138,0.018467256068205463,0.9400000000000001,0.10749676997731397

@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\caption{Experimental results. Values are computed from per-instance perturbation curves.}
+\label{tab:main_results_computed}
+\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+method & mean\_deletion\_drop\_auc & mean\_insertion\_auc & mean\_combined\_score & mean\_runtime\_seconds & completed\_instances & completed\_tasks \\
+\midrule
+aime & 0.7737 & 0.8884 & 0.8310 & 0.0559 & 108 & 1 \\
+cos\_fpde & 0.6571 & 0.4635 & 0.5603 & 0.0135 & 108 & 1 \\
+diff\_fpde & 0.6897 & 0.4610 & 0.5753 & 0.0174 & 108 & 1 \\
+hyb\_fpde\_grid & 0.6897 & 0.4610 & 0.5753 & 0.0209 & 108 & 1 \\
+lime & 0.3794 & 0.2557 & 0.3175 & 0.2603 & 108 & 1 \\
+shap & 0.7337 & 0.6344 & 0.6841 & 0.2533 & 108 & 1 \\
+\bottomrule
+\end{tabular}
+
+\end{table*}

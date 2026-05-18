@@ -1,0 +1,15 @@
+\begin{table*}[!tbp]
+    \caption{Task-balanced OpenML-CC18 results for the predefined four-method comparison. For each seed and method, the metric is averaged equally over tasks without subject-area balancing. Values are mean $\pm$ sample standard deviation over seeds.}
+    \label{tab:task_weighted_results}
+    \centering
+    \begin{tabular}{lcccc}
+        \toprule
+        Method & Deletion-drop AUC & Insertion AUC & Combined score & Runtime (s)  \\
+        \midrule
+        Hyb-FPDE & 0.4532 $\pm$ 0.0026 & 0.7768 $\pm$ 0.0023 & 0.6150 $\pm$ 0.0014 & 0.0499 $\pm$ 0.0008 \\
+        AIME & 0.4581 $\pm$ 0.0022 & 0.8111 $\pm$ 0.0023 & \textbf{0.6346 $\pm$ 0.0012} & 0.0185 $\pm$ 0.0002 \\
+        SHAP & 0.4266 $\pm$ 0.0034 & 0.7648 $\pm$ 0.0029 & 0.5957 $\pm$ 0.0027 & 0.2946 $\pm$ 0.0018 \\
+        LIME & 0.1974 $\pm$ 0.0035 & 0.5295 $\pm$ 0.0027 & 0.3635 $\pm$ 0.0028 & 0.0834 $\pm$ 0.0010 \\
+        \bottomrule
+    \end{tabular}
+\end{table*}

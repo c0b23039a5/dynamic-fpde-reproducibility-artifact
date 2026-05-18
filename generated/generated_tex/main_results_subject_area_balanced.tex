@@ -1,0 +1,15 @@
+\begin{table*}[!tbp]
+    \caption{Subject-area-balanced OpenML-CC18 results for the predefined four-method comparison. For each seed and method, tasks are first averaged within each populated subject area and then the subject areas are averaged equally. Values are mean $\pm$ sample standard deviation over seeds.}
+    \label{tab:main_results}
+    \centering
+    \begin{tabular}{lcccc}
+        \toprule
+        Method & Deletion-drop AUC & Insertion AUC & Combined score & Runtime (s)  \\
+        \midrule
+        Hyb-FPDE & 0.4154 $\pm$ 0.0021 & 0.8047 $\pm$ 0.0026 & 0.6101 $\pm$ 0.0018 & 0.0295 $\pm$ 0.0004 \\
+        AIME & 0.4180 $\pm$ 0.0022 & 0.8244 $\pm$ 0.0031 & \textbf{0.6212 $\pm$ 0.0022} & 0.0168 $\pm$ 0.0003 \\
+        SHAP & 0.3662 $\pm$ 0.0042 & 0.7485 $\pm$ 0.0053 & 0.5574 $\pm$ 0.0043 & 0.1964 $\pm$ 0.0014 \\
+        LIME & 0.1433 $\pm$ 0.0057 & 0.5528 $\pm$ 0.0056 & 0.3481 $\pm$ 0.0053 & 0.0659 $\pm$ 0.0008 \\
+        \bottomrule
+    \end{tabular}
+\end{table*}

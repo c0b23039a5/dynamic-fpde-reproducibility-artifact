@@ -1,0 +1,21 @@
+name: fpde-repro
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  - pip
+  - numpy
+  - pandas
+  - tabulate
+  - jinja2
+  - scikit-learn
+  - scipy
+  - matplotlib
+  - umap-learn
+  - seaborn
+  - pip:
+      - lightgbm
+      - openml
+      - shap
+      - lime
+      - aime-xai

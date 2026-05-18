@@ -1,0 +1,20 @@
+# Keep text files normalized on GitHub
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.python-version text eol=lf
+CHECKSUMS.sha256 text eol=lf
+*.bib text eol=lf
+*.cff text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+*.tex text eol=lf
+
+# Precomputed CSV outputs are generated research artifacts.
+results_precomputed/**/per_instance_results.csv linguist-generated=true
+results_precomputed/**/lambda_distribution.csv linguist-generated=true
+results_precomputed/tables_2_to_8/intermediate_*.csv linguist-generated=true

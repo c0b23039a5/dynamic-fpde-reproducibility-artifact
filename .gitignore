@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local OpenML/cache files
+.openml/
+openml_cache/
+
+# Recomputed experiment outputs; precomputed outputs are intentionally tracked
+results_recomputed/
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/

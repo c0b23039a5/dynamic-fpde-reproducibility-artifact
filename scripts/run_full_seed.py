@@ -61,8 +61,6 @@ def main() -> None:
     cmd = [
         sys.executable,
         str(ROOT / "code" / "run_fpde_openml_cc18_experimental_aime_clean.py"),
-        "--fpde-path",
-        str(ROOT / "code" / "FPDE.py"),
         "--output-dir",
         str(out),
         "--suite-id",

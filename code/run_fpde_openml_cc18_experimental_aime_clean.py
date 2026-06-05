@@ -30,7 +30,6 @@ all reported values from the actual run.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import os
@@ -91,7 +90,7 @@ class RunConfig:
     fractions: List[float]
     methods: List[str]
     output_dir: str
-    fpde_path: str
+    fpde_source: str
     n_estimators: int
     learning_rate: float
     num_leaves: int
@@ -129,17 +128,16 @@ def parse_int_list_or_none(text: Optional[str]) -> Optional[List[int]]:
     return out or None
 
 
-def import_fpde_module(fpde_path: Path):
-    fpde_path = fpde_path.expanduser().resolve()
-    if not fpde_path.exists():
-        raise FileNotFoundError(f"FPDE module not found: {fpde_path}")
-    spec = importlib.util.spec_from_file_location("fpde_core", str(fpde_path))
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load FPDE module from {fpde_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["fpde_core"] = module
-    spec.loader.exec_module(module)
-    return module
+def import_fpde_module():
+    try:
+        import fpde
+    except ImportError as exc:
+        raise RuntimeError(
+            "The fpde package is required. Install dependencies with "
+            "`python -m pip install -r requirements.txt`, which installs "
+            "fpde from https://github.com/fpde-xai/fpde."
+        ) from exc
+    return fpde
 
 
 def make_one_hot_encoder():
@@ -409,12 +407,11 @@ def explain_fpde(
     method: str,
     x: np.ndarray,
     *,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
     model: Any,
     prototypes: np.ndarray,
     prototype_labels: np.ndarray,
     anchor: np.ndarray,
+    fpde_engine: Optional[Any],
     selection: Optional[Any],
 ) -> Tuple[np.ndarray, Any, Dict[str, Any]]:
     positive_label, negative_label, _ = fpde.top_two_labels(model, x)
@@ -453,14 +450,14 @@ def explain_fpde(
     if method == "hyb_fpde_grid":
         if selection is None:
             raise ValueError("hyb_fpde_grid requires a validation selection result")
-        attr, detail = fpde.explain_with_validation_selected_lambda(
+        if fpde_engine is None:
+            raise ValueError("hyb_fpde_grid requires an FPDEEngine")
+        attr, detail = fpde_engine.explain_one(
             x,
-            X_train,
-            y_train,
-            model,
-            selection,
+            lambda_hyb=selection.best_lambda,
             normalize="l1",
             anchor_strategy="mean",
+            model=model,
         )
         return np.asarray(attr, dtype=float), detail["target_label"], {
             "evidence": float(detail.get("evidence", np.nan)),
@@ -774,23 +771,22 @@ def run_one_task(
     perf = model_metrics(model, X_test, y_test_full)
 
     baseline = np.mean(X_fit, axis=0)
-    prototypes, prototype_labels = fpde.class_mean_prototypes(X_fit, y_fit)
+    fpde_engine = fpde.FPDEEngine.fit(X_fit, y_fit, model=model, baseline=baseline)
+    prototypes = fpde_engine.prototypes
+    prototype_labels = fpde_engine.prototype_labels
     anchor = np.mean(X_fit, axis=0)
 
     val_sel_idx = stratified_subsample_indices(y_val, min(cfg.n_val_select, len(y_val)), cfg.seed + 2)
     selection = None
     lambda_rows: List[Dict[str, Any]] = []
     if "hyb_fpde_grid" in cfg.methods:
-        selection = fpde.select_lambda_by_deletion_insertion_validation(
-            X_fit,
-            y_fit,
+        selection = fpde_engine.select_lambda(
             X_val[val_sel_idx],
-            model,
             lambda_hyb_grid=cfg.lambda_grid,
             fractions=cfg.fractions,
-            baseline=baseline,
             normalize="l1",
             anchor_strategy="mean",
+            model=model,
         )
         for row in selection.rows:
             r = dict(row)
@@ -855,12 +851,11 @@ def run_one_task(
                         fpde,
                         method,
                         x,
-                        X_train=X_fit,
-                        y_train=y_fit,
                         model=model,
                         prototypes=prototypes,
                         prototype_labels=prototype_labels,
                         anchor=anchor,
+                        fpde_engine=fpde_engine,
                         selection=selection,
                     )
                     evidence = float(detail.get("evidence", np.nan))
@@ -1068,7 +1063,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--fractions", type=str, default=FRACTIONS_DEFAULT)
     p.add_argument("--methods", type=str, default=",".join(METHODS_DEFAULT), help="Comma-separated method names.")
     p.add_argument("--output-dir", type=str, default="experimental_outputs")
-    p.add_argument("--fpde-path", type=str, default="FPDE.py", help="Path to FPDE.py. Put it next to this runner or pass an absolute path.")
     p.add_argument("--n-estimators", type=int, default=100)
     p.add_argument("--learning-rate", type=float, default=0.05)
     p.add_argument("--num-leaves", type=int, default=31)
@@ -1093,14 +1087,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if unknown:
         raise ValueError(f"unknown methods: {unknown}; allowed={sorted(allowed)}")
 
-    fpde_path = Path(args.fpde_path)
-    if not fpde_path.is_absolute():
-        # First try current working directory, then the script directory.
-        if not fpde_path.exists():
-            script_dir_candidate = Path(__file__).resolve().parent / fpde_path
-            if script_dir_candidate.exists():
-                fpde_path = script_dir_candidate
-
     cfg = RunConfig(
         suite_id=int(args.suite_id),
         task_ids=parse_int_list_or_none(args.task_ids),
@@ -1117,7 +1103,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fractions=parse_float_list(args.fractions),
         methods=methods,
         output_dir=str(args.output_dir),
-        fpde_path=str(fpde_path),
+        fpde_source="fpde package installed from https://github.com/fpde-xai/fpde",
         n_estimators=int(args.n_estimators),
         learning_rate=float(args.learning_rate),
         num_leaves=int(args.num_leaves),
@@ -1126,7 +1112,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         aime_local_y=str(args.aime_local_y),
     )
 
-    fpde = import_fpde_module(fpde_path)
+    fpde = import_fpde_module()
 
     task_ids = cfg.task_ids if cfg.task_ids is not None else get_suite_task_ids(cfg.suite_id)
     if cfg.max_tasks is not None:

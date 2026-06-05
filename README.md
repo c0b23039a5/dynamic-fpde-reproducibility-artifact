@@ -35,7 +35,7 @@ The artifact supports the experiments for FPDE, a lightweight prototype-based po
 
 The artifact contributes to reproducibility by providing:
 
-- the FPDE implementation used for the reported experiments;
+- the FPDE implementation as an installable GitHub dependency from `fpde-xai/fpde`;
 - the OpenML-CC18 experimental runner;
 - scripts for per-task/per-seed reruns;
 - precomputed 72-task, 10-seed result folders included with this artifact;
@@ -46,7 +46,6 @@ The artifact contributes to reproducibility by providing:
 
 ```text
 code/
-  FPDE.py
   run_fpde_openml_cc18_experimental_aime_clean.py
 scripts/
   aggregate_precomputed_results.py
@@ -117,6 +116,7 @@ conda activate fpde-repro
 
 Main Python dependencies:
 
+- fpde, installed from [https://github.com/fpde-xai/fpde](https://github.com/fpde-xai/fpde)
 - numpy
 - pandas
 - tabulate

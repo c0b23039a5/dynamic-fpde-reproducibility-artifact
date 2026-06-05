@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from experiments.common import _openml_summary
 from bayesian_fpde.stats import bootstrap_confidence_intervals, method_tests
-from bayesian_fpde.utils import ensure_dirs, write_csv
+from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso
 
 
 def _read_csvs(results_dir: Path) -> pd.DataFrame:
@@ -27,6 +28,12 @@ def main() -> int:
     figures_dir = Path(args.figures_dir)
     ensure_dirs(results_dir, figures_dir)
     df = _read_csvs(results_dir)
+    openml_path = results_dir / "openml_metrics.csv"
+    if openml_path.exists():
+        openml_metrics = pd.read_csv(openml_path)
+        _openml_summary(openml_metrics, ["dataset_name", "task_id", "seed", "method"]).to_csv(results_dir / "openml_seed_summary.csv", index=False, lineterminator="\n")
+        _openml_summary(openml_metrics, ["dataset_name", "task_id", "method"]).to_csv(results_dir / "openml_global_summary.csv", index=False, lineterminator="\n")
+        _openml_summary(openml_metrics, ["method"]).to_csv(results_dir / "openml_method_summary.csv", index=False, lineterminator="\n")
     metric = "combined_score" if "combined_score" in df.columns else "deletion_drop_auc"
     if "combined_score" not in df.columns and {"deletion_drop_auc", "insertion_auc"}.issubset(df.columns):
         df["combined_score"] = (df["deletion_drop_auc"] + df["insertion_auc"]) / 2.0
@@ -63,9 +70,32 @@ def main() -> int:
                 }
             ]
         )
-    write_csv(tests, results_dir / "statistical_tests.csv")
-    write_csv(effects, results_dir / "effect_sizes.csv")
-    write_csv(ci, results_dir / "bootstrap_confidence_intervals.csv")
+    mode = ""
+    config_hash = ""
+    if not df.empty:
+        if "mode" in df.columns:
+            mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
+        if "config_hash" in df.columns:
+            config_hash = next((str(v) for v in df["config_hash"] if pd.notna(v) and str(v) != ""), "")
+    common = {
+        "mode": mode,
+        "config_hash": config_hash,
+        "timestamp": now_iso(),
+        "git_commit": git_commit(),
+    }
+    for frame, default_status in [(tests, "ok"), (effects, "ok"), (ci, "ok")]:
+        for key, value in common.items():
+            frame[key] = value
+        if "status" not in frame.columns:
+            frame["status"] = default_status
+        if "error_message" not in frame.columns:
+            frame["error_message"] = ""
+        if "metric_direction" not in frame.columns:
+            frame["metric_direction"] = "higher_is_better"
+
+    tests.to_csv(results_dir / "statistical_tests.csv", index=False, lineterminator="\n")
+    effects.to_csv(results_dir / "effect_sizes.csv", index=False, lineterminator="\n")
+    ci.to_csv(results_dir / "bootstrap_confidence_intervals.csv", index=False, lineterminator="\n")
     return 0
 
 

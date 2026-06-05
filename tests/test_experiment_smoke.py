@@ -60,9 +60,12 @@ def test_all_smoke_commands_and_outputs():
     _run("experiments.run_openml_benchmark", "--config", "configs/openml_cc18.yaml", "--mode", "smoke")
     openml = _csv(
         "results/openml_metrics.csv",
-        REQUIRED_METADATA | {"task_id", "fold", "split_id", "faithfulness_correlation", "faithfulness_delta_mean", "dependency_available", "n_model_calls"},
+        REQUIRED_METADATA | {"task_id", "fold", "split_id", "faithfulness_correlation", "faithfulness_delta_mean", "dependency_available", "n_model_calls", "combined_score", "metric_direction"},
     )
     assert (ROOT / "results" / "openml_local_explanations.parquet").exists() or (ROOT / "results" / "openml_local_explanations.parquet.csv").exists()
+    _csv("results/openml_seed_summary.csv", {"dataset_name", "task_id", "seed", "method", "n_rows", "mean_deletion_auc"})
+    _csv("results/openml_global_summary.csv", {"dataset_name", "task_id", "method", "n_rows", "mean_deletion_auc"})
+    _csv("results/openml_method_summary.csv", {"method", "n_rows", "n_datasets", "mean_deletion_auc"})
     skipped = openml[openml["method"].isin(["shap", "lime", "aime"]) & (openml["status"] == "skipped")]
     assert not skipped.empty
     assert skipped["error_message"].astype(str).str.len().gt(0).all()
@@ -89,3 +92,59 @@ def test_all_smoke_commands_and_outputs():
 
     assert (ROOT / "figures" / "openml_faithfulness_boxplot.png").exists()
     assert (ROOT / "figures" / "ablation_lambda.png").exists()
+
+
+def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
+    results = tmp_path / "results"
+    figures = tmp_path / "figures"
+    results.mkdir()
+    rows = []
+    for seed in [0, 1]:
+        for explained_index in [0, 1]:
+            for method, score in [("hyb_fpde", 0.4), ("bayesian_hyb_fpde", 0.5)]:
+                rows.append(
+                    {
+                        "method": method,
+                        "dataset_name": "dummy",
+                        "task_id": 1,
+                        "seed": seed,
+                        "fold": "fold0",
+                        "split_id": "fold0",
+                        "mode": "test",
+                        "config_hash": "abc123",
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "git_commit": "deadbee",
+                        "status": "ok",
+                        "error_message": "",
+                        "explained_index": explained_index,
+                        "explained_order": explained_index,
+                        "true_label": 0,
+                        "pred_label": 0,
+                        "target_label": 0,
+                        "deletion_auc": score,
+                        "deletion_drop_auc": score,
+                        "insertion_auc": score,
+                        "faithfulness_correlation": score,
+                        "runtime_seconds": 0.1,
+                        "number_of_model_calls": 3,
+                        "top_k_jaccard": score,
+                        "test_accuracy": 0.9,
+                        "combined_score": score,
+                        "metric_direction": "higher_is_better",
+                    }
+                )
+    pd.DataFrame(rows).to_csv(results / "openml_metrics.csv", index=False)
+    _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
+    seed_summary = pd.read_csv(results / "openml_seed_summary.csv")
+    global_summary = pd.read_csv(results / "openml_global_summary.csv")
+    method_summary = pd.read_csv(results / "openml_method_summary.csv")
+    assert not seed_summary.empty
+    assert not global_summary.empty
+    assert method_summary["method"].nunique() == 2
+    assert "explained_index" not in global_summary.columns
+    assert "true_label" not in global_summary.columns
+    for name in ["statistical_tests.csv", "effect_sizes.csv", "bootstrap_confidence_intervals.csv"]:
+        df = pd.read_csv(results / name)
+        assert not df.empty
+        assert "mode" in df.columns
+        assert df[["mode", "config_hash", "timestamp", "git_commit", "status"]].notna().any().all()

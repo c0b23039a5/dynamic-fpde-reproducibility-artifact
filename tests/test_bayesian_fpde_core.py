@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import builtins
+import sys
+import types
+
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
-from bayesian_fpde.baselines import optional_baseline
+from bayesian_fpde.baselines import explain_shap, optional_baseline
 from bayesian_fpde.bayesian_fpde import BayesianFPDEConfig, explain_bayesian_fpde
 from bayesian_fpde.datasets import generate_synthetic_gaussian
 from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde, true_fpde_attribution
@@ -94,3 +98,42 @@ def test_optional_baseline_skip_record_for_unknown_dependency_path():
     assert result.attribution is None
     assert result.error_message
     assert result.dependency_available in {True, False}
+
+
+def test_shap_skipped_when_unavailable(monkeypatch):
+    data, model = _model_data()
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "shap":
+            raise ImportError("blocked shap for test")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = optional_baseline("shap", model, data.X[0], data.X, data.y, data.feature_names, int(model.classes_[0]), seed=0)
+    assert result.status == "skipped"
+    assert "SHAP is not installed" in result.error_message
+
+
+def test_shap_uses_training_background_when_available(monkeypatch):
+    data, model = _model_data()
+    captured = {}
+
+    class FakeValues:
+        def __init__(self, n_features: int, n_classes: int):
+            self.values = np.zeros((1, n_features, n_classes), dtype=float)
+
+    class FakeExplainer:
+        def __init__(self, predict_fn, background):
+            captured["background"] = np.asarray(background)
+            self.predict_fn = predict_fn
+
+        def __call__(self, x):
+            proba = self.predict_fn(x)
+            return FakeValues(np.asarray(x).shape[1], proba.shape[1])
+
+    monkeypatch.setitem(sys.modules, "shap", types.SimpleNamespace(Explainer=FakeExplainer))
+    attr = explain_shap(model, data.X[0], data.X, int(model.classes_[0]), seed=2, max_background=10)
+    assert attr.shape == data.X[0].shape
+    assert captured["background"].shape[0] == 10
+    assert not np.array_equal(captured["background"], data.X[0].reshape(1, -1))

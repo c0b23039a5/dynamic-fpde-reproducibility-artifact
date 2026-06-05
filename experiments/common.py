@@ -203,6 +203,11 @@ def evaluate_methods_for_dataset(
                 metric_calls = int(2 * len((0.0, 0.1, 0.2, 0.5, 1.0)) + 1 + x.size)
                 metric["number_of_model_calls"] = n_model_calls or metric_calls
                 metric["n_model_calls"] = n_model_calls or metric_calls
+                # Higher is better for both terms:
+                # deletion_drop_auc = p0 - deletion_auc, so larger probability drop is better;
+                # insertion_auc rewards recovering target probability early as features are inserted.
+                metric["combined_score"] = float((metric["deletion_drop_auc"] + metric["insertion_auc"]) / 2.0)
+                metric["metric_direction"] = "higher_is_better"
                 metric_rows.append({**row_base, **metric, "top_k_jaccard": np.nan})
                 if summary is not None:
                     for _, feature_row in summary.iterrows():
@@ -228,7 +233,7 @@ def evaluate_methods_for_dataset(
                             }
                         )
             else:
-                metric_rows.append({**row_base, "p0": np.nan, "deletion_auc": np.nan, "deletion_drop_auc": np.nan, "insertion_auc": np.nan, "comprehensiveness": np.nan, "sufficiency": np.nan, "faithfulness_correlation": np.nan, "faithfulness_delta_mean": np.nan, "faithfulness_delta_abs_mean": np.nan, "number_of_model_calls": n_model_calls, "top_k_jaccard": np.nan})
+                metric_rows.append({**row_base, "p0": np.nan, "deletion_auc": np.nan, "deletion_drop_auc": np.nan, "insertion_auc": np.nan, "comprehensiveness": np.nan, "sufficiency": np.nan, "faithfulness_correlation": np.nan, "faithfulness_delta_mean": np.nan, "faithfulness_delta_abs_mean": np.nan, "number_of_model_calls": n_model_calls, "combined_score": np.nan, "metric_direction": "higher_is_better", "top_k_jaccard": np.nan})
     metrics = pd.DataFrame(metric_rows)
     if not metrics.empty:
         det = metrics[metrics["method"].isin(["hyb_fpde", "hyb_fpde_grid"])][["explained_index", "deletion_drop_auc"]]
@@ -294,10 +299,55 @@ def load_tabular_openml_or_local(cfg: Dict[str, Any], *, seed: int, mode: str):
         yield (int(task_id), (dataset_name, X_train, y_train, X_test, y_test, model, names, model_name), split_name)
 
 
+def _status_counts(group: pd.DataFrame) -> pd.Series:
+    counts = group["status"].value_counts() if "status" in group.columns else pd.Series(dtype=int)
+    return pd.Series(
+        {
+            "status_ok": int(counts.get("ok", 0)),
+            "status_skipped": int(counts.get("skipped", 0)),
+            "status_error": int(counts.get("error", 0)),
+        }
+    )
+
+
+def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.DataFrame:
+    if metrics.empty:
+        return pd.DataFrame()
+    mean_cols = [
+        "deletion_auc",
+        "deletion_drop_auc",
+        "insertion_auc",
+        "faithfulness_correlation",
+        "runtime_seconds",
+        "number_of_model_calls",
+        "top_k_jaccard",
+        "test_accuracy",
+        "combined_score",
+    ]
+    available_mean_cols = [col for col in mean_cols if col in metrics.columns]
+    grouped = metrics.groupby(list(group_cols), dropna=False)
+    summary = grouped.agg(
+        n_rows=("method", "size"),
+        n_datasets=("dataset_name", "nunique"),
+        n_seeds=("seed", "nunique"),
+        n_explain_instances=("explained_index", "nunique"),
+        **{f"mean_{col}": (col, "mean") for col in available_mean_cols},
+    ).reset_index()
+    status = grouped.apply(_status_counts).reset_index()
+    summary = summary.merge(status, on=list(group_cols), how="left")
+    summary["metric_direction"] = "higher_is_better"
+    for meta_col in ["mode", "config_hash", "git_commit"]:
+        if meta_col in metrics.columns and meta_col not in summary.columns:
+            meta = grouped[meta_col].agg(lambda s: next((str(v) for v in s if pd.notna(v) and str(v) != ""), "")).reset_index(name=meta_col)
+            summary = summary.merge(meta, on=list(group_cols), how="left")
+    return summary
+
+
 def write_standard_outputs(results_dir: str | Path, figures_dir: str | Path, local: pd.DataFrame, metrics: pd.DataFrame, runtime: pd.DataFrame) -> None:
     ensure_dirs(results_dir, figures_dir)
     write_parquet_or_csv(local, Path(results_dir) / "openml_local_explanations.parquet")
-    summary = metrics[metrics["status"] == "ok"].groupby(["dataset_name", "method"], as_index=False).mean(numeric_only=True) if not metrics.empty else pd.DataFrame()
-    write_csv(summary, Path(results_dir) / "openml_global_summary.csv")
+    write_csv(_openml_summary(metrics, ["dataset_name", "task_id", "seed", "method"]), Path(results_dir) / "openml_seed_summary.csv")
+    write_csv(_openml_summary(metrics, ["dataset_name", "task_id", "method"]), Path(results_dir) / "openml_global_summary.csv")
+    write_csv(_openml_summary(metrics, ["method"]), Path(results_dir) / "openml_method_summary.csv")
     write_csv(metrics, Path(results_dir) / "openml_metrics.csv")
     write_csv(runtime, Path(results_dir) / "openml_runtime.csv")

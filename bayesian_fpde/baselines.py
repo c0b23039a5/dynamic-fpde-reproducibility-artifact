@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -18,21 +18,53 @@ class BaselineResult:
     error_message: str = ""
     dependency_available: bool = False
     n_model_calls: int = 0
+    background_size: int = 0
 
 
-def explain_shap(model: Any, x: np.ndarray, target_label: int) -> np.ndarray:
+def shap_background_sample(
+    X_train: np.ndarray,
+    *,
+    seed: int = 0,
+    max_background: int = 100,
+) -> np.ndarray:
+    X_train = np.asarray(X_train, dtype=float)
+    if X_train.ndim != 2:
+        raise ValueError("X_train must be 2D")
+    if X_train.shape[0] == 0:
+        raise ValueError("X_train must contain at least one row")
+    n_background = min(int(max_background), X_train.shape[0])
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(X_train.shape[0], size=n_background, replace=False)
+    return X_train[np.sort(idx)]
+
+
+def explain_shap(
+    model: Any,
+    x: np.ndarray,
+    X_train: np.ndarray,
+    target_label: int,
+    *,
+    seed: int = 0,
+    max_background: int = 100,
+) -> np.ndarray:
     try:
         import shap
     except Exception as exc:
         raise MethodUnavailable("SHAP is not installed") from exc
-    explainer = shap.Explainer(model.predict_proba, np.asarray(x).reshape(1, -1))
-    values = explainer(np.asarray(x).reshape(1, -1))
+    background = shap_background_sample(X_train, seed=seed, max_background=max_background)
+    explainer = shap.Explainer(model.predict_proba, background)
+    x_2d = np.asarray(x, dtype=float).reshape(1, -1)
+    values = explainer(x_2d)
     arr = np.asarray(values.values)
     classes = np.asarray(getattr(model, "classes_", np.arange(arr.shape[-1])), dtype=int)
     idx = int(np.where(classes == int(target_label))[0][0]) if arr.ndim == 3 else 0
     if arr.ndim == 3:
-        return np.asarray(arr[0, :, idx], dtype=float)
-    return np.asarray(arr[0], dtype=float)
+        out = np.asarray(arr[0, :, idx], dtype=float)
+    else:
+        out = np.asarray(arr[0], dtype=float)
+    if out.shape != np.asarray(x).shape:
+        raise ValueError(f"SHAP attribution shape {out.shape} does not match x shape {np.asarray(x).shape}")
+    return out
 
 
 def explain_lime(model: Any, x: np.ndarray, X_train: np.ndarray, y_train: np.ndarray, feature_names: Sequence[str], target_label: int, *, seed: int = 0) -> np.ndarray:
@@ -62,7 +94,7 @@ def explain_aime(*args: Any, **kwargs: Any) -> np.ndarray:
         import aime_xai  # noqa: F401
     except Exception as exc:
         raise MethodUnavailable("AIME is not installed") from exc
-    raise MethodUnavailable("AIME adapter is not enabled in the Bayesian pipeline v1")
+    raise MethodUnavailable("AIME dependency is installed but the adapter is not implemented in this artifact")
 
 
 def optional_baseline(
@@ -75,6 +107,7 @@ def optional_baseline(
     target_label: int,
     *,
     seed: int = 0,
+    max_background: int = 100,
 ) -> BaselineResult:
     dependency_name = {
         "shap": "shap",
@@ -87,19 +120,22 @@ def optional_baseline(
     dependency_available = importlib.util.find_spec(dependency_name) is not None
     try:
         if method == "shap":
-            attr = explain_shap(model, x, target_label)
-            n_model_calls = 1
+            attr = explain_shap(model, x, X_train, target_label, seed=seed, max_background=max_background)
+            n_model_calls = min(int(max_background), int(np.asarray(X_train).shape[0])) + 1
+            background_size = min(int(max_background), int(np.asarray(X_train).shape[0]))
         elif method == "lime":
             attr = explain_lime(model, x, X_train, y_train, feature_names, target_label, seed=seed)
             n_model_calls = 5000
+            background_size = int(np.asarray(X_train).shape[0])
         elif method == "aime":
             attr = explain_aime(model, x, X_train, y_train, feature_names, target_label)
             n_model_calls = 0
+            background_size = int(np.asarray(X_train).shape[0])
         else:
             raise ValueError(f"unknown baseline method: {method}")
         if attr.shape != x.shape:
             raise ValueError(f"attribution shape {attr.shape} does not match {x.shape}")
-        return BaselineResult(np.asarray(attr, dtype=float), "ok", "", dependency_available, n_model_calls)
+        return BaselineResult(np.asarray(attr, dtype=float), "ok", "", dependency_available, n_model_calls, background_size)
     except MethodUnavailable as exc:
         return BaselineResult(None, "skipped", str(exc), dependency_available, 0)
     except Exception as exc:

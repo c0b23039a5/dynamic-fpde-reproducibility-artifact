@@ -194,7 +194,9 @@ Main generated outputs include:
 - `results/synthetic_calibration.csv`
 - `results/synthetic_calibration_summary.csv`
 - `results/openml_local_explanations.parquet`
+- `results/openml_seed_summary.csv`
 - `results/openml_global_summary.csv`
+- `results/openml_method_summary.csv`
 - `results/openml_metrics.csv`
 - `results/openml_runtime.csv`
 - `results/stability_metrics.csv`
@@ -245,6 +247,44 @@ once the workflow and optional baseline dependencies are behaving as expected.
 Every push and pull request also runs **Bayesian pipeline CI**, which installs
 the local package, runs `pytest`, executes smoke experiments, aggregates the
 outputs, and uploads `results/`, `figures/`, and `logs/` for debugging.
+
+OpenML benchmark summaries are split by aggregation level:
+
+- `openml_seed_summary.csv`: one row per `dataset_name`, `task_id`, `seed`,
+  and `method`.
+- `openml_global_summary.csv`: one row per `dataset_name`, `task_id`, and
+  `method`, averaged across explained instances and seeds.
+- `openml_method_summary.csv`: one row per method, averaged across datasets and
+  seeds.
+
+Summary files report counts, status counts, and means of meaningful metrics
+only; identifiers such as explained indices and labels are not averaged.
+
+SHAP explanations use a training-background sample rather than the explained
+instance alone. The runner samples up to `max_background=100` rows from
+`X_train` with the configured seed and uses that background when constructing
+`shap.Explainer`. The recorded SHAP model-call count is an approximation based
+on the background size and one explained sample.
+
+`combined_score` is a convenience aggregate, not a primary theoretical metric:
+
+```text
+combined_score = (deletion_drop_auc + insertion_auc) / 2
+```
+
+`deletion_drop_auc = p0 - deletion_auc`, so higher values indicate a larger
+probability drop under deletion. `insertion_auc` is also higher-is-better
+because important inserted features should recover the target probability
+earlier. Result rows record `metric_direction = "higher_is_better"`.
+
+Optional baselines are always attempted and recorded as `ok`, `skipped`, or
+`error`. AIME may be recorded as skipped even when the dependency is installed
+because the AIME adapter is not implemented in this artifact; that case is
+distinguished from a missing dependency in `error_message`.
+
+OpenML-10/`medium` runs are preliminary engineering checks. They are not
+equivalent to the full OpenML-CC18 experiment and should not be reported as full
+benchmark results.
 
 ### 5.1 Reconstruct manuscript tables
 

@@ -1,0 +1,599 @@
+name: Bayesian OpenML experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Experiment mode from configs/openml_cc18.yaml"
+        required: true
+        default: "medium"
+        type: choice
+        options:
+          - medium
+          - full
+      suite_id:
+        description: "OpenML benchmark suite id"
+        required: true
+        default: "99"
+      task_ids:
+        description: "Optional task IDs to run, as comma-separated values or a JSON array"
+        required: false
+        default: ""
+      max_tasks:
+        description: "OpenML tasks to run when task_ids is empty; use 0 for all tasks in the suite"
+        required: true
+        default: "10"
+      seeds:
+        description: "JSON array of seeds"
+        required: true
+        default: "[0,1,2]"
+      n_explain:
+        description: "Correctly classified test samples to explain per task/seed"
+        required: true
+        default: "50"
+      posterior_samples:
+        description: "Bayesian-FPDE posterior prototype samples"
+        required: true
+        default: "100"
+      bootstrap_samples:
+        description: "Bootstrap-FPDE resamples"
+        required: true
+        default: "30"
+      methods:
+        description: "Comma-separated methods"
+        required: true
+        default: "diff_fpde,cos_fpde,hyb_fpde,bayesian_diff_fpde,bayesian_cos_fpde,bayesian_hyb_fpde,bootstrap_fpde,shap,lime,aime"
+      max_train_rows:
+        description: "Optional train-row cap per task/seed; use 0 to disable"
+        required: true
+        default: "0"
+      max_test_rows:
+        description: "Optional test-row cap per task/seed; use 0 to disable"
+        required: true
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-tasks:
+    name: Prepare Bayesian task seed matrices
+    runs-on: ubuntu-latest
+    outputs:
+      tasks: ${{ steps.tasks.outputs.tasks }}
+      matrix_0: ${{ steps.tasks.outputs.matrix_0 }}
+      matrix_1: ${{ steps.tasks.outputs.matrix_1 }}
+      matrix_2: ${{ steps.tasks.outputs.matrix_2 }}
+      matrix_3: ${{ steps.tasks.outputs.matrix_3 }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Install OpenML client
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install openml
+
+      - name: Resolve OpenML task IDs
+        id: tasks
+        env:
+          SUITE_ID: ${{ inputs.suite_id }}
+          MAX_TASKS: ${{ inputs.max_tasks }}
+          TASK_IDS: ${{ inputs.task_ids }}
+          SEEDS: ${{ inputs.seeds }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          def parse_task_ids(text):
+              text = (text or "").strip()
+              if not text:
+                  return None
+              if text.startswith("["):
+                  return [int(value) for value in json.loads(text)]
+              return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+          task_ids = parse_task_ids(os.environ.get("TASK_IDS"))
+          if task_ids is None:
+              import openml
+
+              suite_id = int(os.environ["SUITE_ID"])
+              max_tasks = int(os.environ["MAX_TASKS"])
+              suite = openml.study.get_suite(suite_id)
+              task_ids = [int(task_id) for task_id in suite.tasks]
+              if max_tasks > 0:
+                  task_ids = task_ids[:max_tasks]
+
+          if not task_ids:
+              raise SystemExit("No OpenML task IDs were resolved.")
+
+          seeds = [int(seed) for seed in json.loads(os.environ["SEEDS"])]
+          if not seeds:
+              raise SystemExit("No seeds were resolved.")
+
+          pairs = [{"task_id": task_id, "seed": seed} for task_id in task_ids for seed in seeds]
+          chunk_size = 256
+          max_chunks = 4
+          chunks = [pairs[i:i + chunk_size] for i in range(0, len(pairs), chunk_size)]
+          if len(chunks) > max_chunks:
+              raise SystemExit(
+                  f"Resolved {len(pairs)} task/seed pairs, but this workflow supports "
+                  f"up to {chunk_size * max_chunks}. Reduce task_ids or seeds, or add more chunks."
+              )
+          while len(chunks) < max_chunks:
+              chunks.append([])
+
+          tasks_json = json.dumps(task_ids)
+          print(f"Resolved {len(task_ids)} task(s): {tasks_json}")
+          print(f"Resolved {len(seeds)} seed(s): {json.dumps(seeds)}")
+          print(f"Prepared {len(pairs)} task/seed pair(s) across {sum(bool(c) for c in chunks)} matrix chunk(s).")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"tasks={tasks_json}", file=output)
+              for index, chunk in enumerate(chunks):
+                  print(f"matrix_{index}={json.dumps(chunk)}", file=output)
+          PY
+
+  task-seed-0:
+    name: Bayesian task ${{ matrix.task_id }} seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    needs: prepare-tasks
+    if: ${{ needs.prepare-tasks.outputs.matrix_0 != '[]' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare-tasks.outputs.matrix_0) }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.openml
+          key: bayesian-openml-${{ runner.os }}-${{ hashFiles('requirements.txt', 'configs/openml_cc18.yaml') }}
+          restore-keys: |
+            bayesian-openml-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scikit-learn scipy matplotlib pyyaml pytest pyarrow lightgbm openml
+          python -m pip install shap lime aime-xai umap-learn seaborn || true
+      - name: Write task config
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+          SUITE_ID: ${{ inputs.suite_id }}
+          N_EXPLAIN: ${{ inputs.n_explain }}
+          POSTERIOR_SAMPLES: ${{ inputs.posterior_samples }}
+          BOOTSTRAP_SAMPLES: ${{ inputs.bootstrap_samples }}
+          METHODS: ${{ inputs.methods }}
+          MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
+          MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
+        run: |
+          python - <<'PY'
+          import os
+          import yaml
+
+          methods = [m.strip() for m in os.environ["METHODS"].split(",") if m.strip()]
+          cfg = {
+              "results_dir": "results",
+              "figures_dir": "figures",
+              "logs_dir": "logs",
+              "suite_id": int(os.environ["SUITE_ID"]),
+              "task_ids": [int(os.environ["TASK_ID"])],
+              "seeds": [int(os.environ["SEED"])],
+              "local_smoke": False,
+              "max_tasks": 1,
+              "max_train_rows": int(os.environ["MAX_TRAIN_ROWS"]),
+              "max_test_rows": int(os.environ["MAX_TEST_ROWS"]),
+              "n_explain": int(os.environ["N_EXPLAIN"]),
+              "posterior_samples": int(os.environ["POSTERIOR_SAMPLES"]),
+              "bootstrap_samples": int(os.environ["BOOTSTRAP_SAMPLES"]),
+              "top_k": 5,
+              "tau": 0.0,
+              "lambda_hyb": 0.5,
+              "model": "auto",
+              "methods": methods,
+              "modes": {
+                  "medium": {},
+                  "full": {},
+              },
+          }
+          with open("bayesian_task_config.yaml", "w", encoding="utf-8") as fh:
+              yaml.safe_dump(cfg, fh, sort_keys=False)
+          PY
+      - name: Run Bayesian OpenML task seed
+        env:
+          PYTHONUNBUFFERED: "1"
+          MODE: ${{ inputs.mode }}
+        run: |
+          python -m experiments.run_openml_benchmark --config bayesian_task_config.yaml --mode "$MODE"
+      - name: Stage task seed artifact
+        if: always()
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          mkdir -p "ci_artifacts/task_${TASK_ID}_seed_${SEED}"
+          cp -R results figures logs "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+          cp bayesian_task_config.yaml "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+      - name: Upload task seed results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-openml-task-${{ matrix.task_id }}-seed-${{ matrix.seed }}
+          path: ci_artifacts/
+          retention-days: 30
+
+  task-seed-1:
+    name: Bayesian task ${{ matrix.task_id }} seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    needs: prepare-tasks
+    if: ${{ needs.prepare-tasks.outputs.matrix_1 != '[]' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare-tasks.outputs.matrix_1) }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.openml
+          key: bayesian-openml-${{ runner.os }}-${{ hashFiles('requirements.txt', 'configs/openml_cc18.yaml') }}
+          restore-keys: |
+            bayesian-openml-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scikit-learn scipy matplotlib pyyaml pytest pyarrow lightgbm openml
+          python -m pip install shap lime aime-xai umap-learn seaborn || true
+      - name: Write task config
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+          SUITE_ID: ${{ inputs.suite_id }}
+          N_EXPLAIN: ${{ inputs.n_explain }}
+          POSTERIOR_SAMPLES: ${{ inputs.posterior_samples }}
+          BOOTSTRAP_SAMPLES: ${{ inputs.bootstrap_samples }}
+          METHODS: ${{ inputs.methods }}
+          MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
+          MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
+        run: |
+          python - <<'PY'
+          import os
+          import yaml
+
+          methods = [m.strip() for m in os.environ["METHODS"].split(",") if m.strip()]
+          cfg = {
+              "results_dir": "results",
+              "figures_dir": "figures",
+              "logs_dir": "logs",
+              "suite_id": int(os.environ["SUITE_ID"]),
+              "task_ids": [int(os.environ["TASK_ID"])],
+              "seeds": [int(os.environ["SEED"])],
+              "local_smoke": False,
+              "max_tasks": 1,
+              "max_train_rows": int(os.environ["MAX_TRAIN_ROWS"]),
+              "max_test_rows": int(os.environ["MAX_TEST_ROWS"]),
+              "n_explain": int(os.environ["N_EXPLAIN"]),
+              "posterior_samples": int(os.environ["POSTERIOR_SAMPLES"]),
+              "bootstrap_samples": int(os.environ["BOOTSTRAP_SAMPLES"]),
+              "top_k": 5,
+              "tau": 0.0,
+              "lambda_hyb": 0.5,
+              "model": "auto",
+              "methods": methods,
+              "modes": {
+                  "medium": {},
+                  "full": {},
+              },
+          }
+          with open("bayesian_task_config.yaml", "w", encoding="utf-8") as fh:
+              yaml.safe_dump(cfg, fh, sort_keys=False)
+          PY
+      - name: Run Bayesian OpenML task seed
+        env:
+          PYTHONUNBUFFERED: "1"
+          MODE: ${{ inputs.mode }}
+        run: |
+          python -m experiments.run_openml_benchmark --config bayesian_task_config.yaml --mode "$MODE"
+      - name: Stage task seed artifact
+        if: always()
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          mkdir -p "ci_artifacts/task_${TASK_ID}_seed_${SEED}"
+          cp -R results figures logs "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+          cp bayesian_task_config.yaml "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+      - name: Upload task seed results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-openml-task-${{ matrix.task_id }}-seed-${{ matrix.seed }}
+          path: ci_artifacts/
+          retention-days: 30
+
+  task-seed-2:
+    name: Bayesian task ${{ matrix.task_id }} seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    needs: prepare-tasks
+    if: ${{ needs.prepare-tasks.outputs.matrix_2 != '[]' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare-tasks.outputs.matrix_2) }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.openml
+          key: bayesian-openml-${{ runner.os }}-${{ hashFiles('requirements.txt', 'configs/openml_cc18.yaml') }}
+          restore-keys: |
+            bayesian-openml-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scikit-learn scipy matplotlib pyyaml pytest pyarrow lightgbm openml
+          python -m pip install shap lime aime-xai umap-learn seaborn || true
+      - name: Write task config
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+          SUITE_ID: ${{ inputs.suite_id }}
+          N_EXPLAIN: ${{ inputs.n_explain }}
+          POSTERIOR_SAMPLES: ${{ inputs.posterior_samples }}
+          BOOTSTRAP_SAMPLES: ${{ inputs.bootstrap_samples }}
+          METHODS: ${{ inputs.methods }}
+          MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
+          MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
+        run: |
+          python - <<'PY'
+          import os
+          import yaml
+
+          methods = [m.strip() for m in os.environ["METHODS"].split(",") if m.strip()]
+          cfg = {
+              "results_dir": "results",
+              "figures_dir": "figures",
+              "logs_dir": "logs",
+              "suite_id": int(os.environ["SUITE_ID"]),
+              "task_ids": [int(os.environ["TASK_ID"])],
+              "seeds": [int(os.environ["SEED"])],
+              "local_smoke": False,
+              "max_tasks": 1,
+              "max_train_rows": int(os.environ["MAX_TRAIN_ROWS"]),
+              "max_test_rows": int(os.environ["MAX_TEST_ROWS"]),
+              "n_explain": int(os.environ["N_EXPLAIN"]),
+              "posterior_samples": int(os.environ["POSTERIOR_SAMPLES"]),
+              "bootstrap_samples": int(os.environ["BOOTSTRAP_SAMPLES"]),
+              "top_k": 5,
+              "tau": 0.0,
+              "lambda_hyb": 0.5,
+              "model": "auto",
+              "methods": methods,
+              "modes": {
+                  "medium": {},
+                  "full": {},
+              },
+          }
+          with open("bayesian_task_config.yaml", "w", encoding="utf-8") as fh:
+              yaml.safe_dump(cfg, fh, sort_keys=False)
+          PY
+      - name: Run Bayesian OpenML task seed
+        env:
+          PYTHONUNBUFFERED: "1"
+          MODE: ${{ inputs.mode }}
+        run: |
+          python -m experiments.run_openml_benchmark --config bayesian_task_config.yaml --mode "$MODE"
+      - name: Stage task seed artifact
+        if: always()
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          mkdir -p "ci_artifacts/task_${TASK_ID}_seed_${SEED}"
+          cp -R results figures logs "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+          cp bayesian_task_config.yaml "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+      - name: Upload task seed results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-openml-task-${{ matrix.task_id }}-seed-${{ matrix.seed }}
+          path: ci_artifacts/
+          retention-days: 30
+
+  task-seed-3:
+    name: Bayesian task ${{ matrix.task_id }} seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    needs: prepare-tasks
+    if: ${{ needs.prepare-tasks.outputs.matrix_3 != '[]' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare-tasks.outputs.matrix_3) }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.openml
+          key: bayesian-openml-${{ runner.os }}-${{ hashFiles('requirements.txt', 'configs/openml_cc18.yaml') }}
+          restore-keys: |
+            bayesian-openml-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scikit-learn scipy matplotlib pyyaml pytest pyarrow lightgbm openml
+          python -m pip install shap lime aime-xai umap-learn seaborn || true
+      - name: Write task config
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+          SUITE_ID: ${{ inputs.suite_id }}
+          N_EXPLAIN: ${{ inputs.n_explain }}
+          POSTERIOR_SAMPLES: ${{ inputs.posterior_samples }}
+          BOOTSTRAP_SAMPLES: ${{ inputs.bootstrap_samples }}
+          METHODS: ${{ inputs.methods }}
+          MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
+          MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
+        run: |
+          python - <<'PY'
+          import os
+          import yaml
+
+          methods = [m.strip() for m in os.environ["METHODS"].split(",") if m.strip()]
+          cfg = {
+              "results_dir": "results",
+              "figures_dir": "figures",
+              "logs_dir": "logs",
+              "suite_id": int(os.environ["SUITE_ID"]),
+              "task_ids": [int(os.environ["TASK_ID"])],
+              "seeds": [int(os.environ["SEED"])],
+              "local_smoke": False,
+              "max_tasks": 1,
+              "max_train_rows": int(os.environ["MAX_TRAIN_ROWS"]),
+              "max_test_rows": int(os.environ["MAX_TEST_ROWS"]),
+              "n_explain": int(os.environ["N_EXPLAIN"]),
+              "posterior_samples": int(os.environ["POSTERIOR_SAMPLES"]),
+              "bootstrap_samples": int(os.environ["BOOTSTRAP_SAMPLES"]),
+              "top_k": 5,
+              "tau": 0.0,
+              "lambda_hyb": 0.5,
+              "model": "auto",
+              "methods": methods,
+              "modes": {
+                  "medium": {},
+                  "full": {},
+              },
+          }
+          with open("bayesian_task_config.yaml", "w", encoding="utf-8") as fh:
+              yaml.safe_dump(cfg, fh, sort_keys=False)
+          PY
+      - name: Run Bayesian OpenML task seed
+        env:
+          PYTHONUNBUFFERED: "1"
+          MODE: ${{ inputs.mode }}
+        run: |
+          python -m experiments.run_openml_benchmark --config bayesian_task_config.yaml --mode "$MODE"
+      - name: Stage task seed artifact
+        if: always()
+        env:
+          TASK_ID: ${{ matrix.task_id }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          mkdir -p "ci_artifacts/task_${TASK_ID}_seed_${SEED}"
+          cp -R results figures logs "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+          cp bayesian_task_config.yaml "ci_artifacts/task_${TASK_ID}_seed_${SEED}/" || true
+      - name: Upload task seed results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-openml-task-${{ matrix.task_id }}-seed-${{ matrix.seed }}
+          path: ci_artifacts/
+          retention-days: 30
+
+  aggregate:
+    name: Aggregate Bayesian OpenML results
+    runs-on: ubuntu-latest
+    needs:
+      - task-seed-0
+      - task-seed-1
+      - task-seed-2
+      - task-seed-3
+    if: always()
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Install aggregation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scipy pyarrow pyyaml matplotlib scikit-learn
+
+      - name: Download task seed artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bayesian-openml-task-*-seed-*
+          path: bayesian_artifacts
+          merge-multiple: true
+
+      - name: Combine task seed outputs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("bayesian_artifacts")
+          out = Path("results")
+          out.mkdir(exist_ok=True)
+
+          csv_outputs = [
+              "openml_global_summary.csv",
+              "openml_metrics.csv",
+              "openml_runtime.csv",
+          ]
+          for name in csv_outputs:
+              frames = [pd.read_csv(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
+              if frames:
+                  pd.concat(frames, ignore_index=True, sort=False).to_csv(out / name, index=False, lineterminator="\n")
+
+          local_frames = []
+          for path in root.rglob("results/openml_local_explanations.parquet"):
+              try:
+                  local_frames.append(pd.read_parquet(path))
+              except Exception:
+                  pass
+          for path in root.rglob("results/openml_local_explanations.parquet.csv"):
+              local_frames.append(pd.read_csv(path))
+          if local_frames:
+              pd.concat(local_frames, ignore_index=True, sort=False).to_parquet(out / "openml_local_explanations.parquet", index=False)
+          PY
+
+      - name: Aggregate statistics
+        run: |
+          python -m experiments.aggregate_results --results-dir results --figures-dir figures
+
+      - name: Upload aggregate summary
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-openml-aggregate
+          path: |
+            results/
+            figures/
+          retention-days: 30

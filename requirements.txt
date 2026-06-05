@@ -4,6 +4,7 @@ numpy
 pandas
 tabulate
 jinja2
+pyyaml
 scikit-learn
 lightgbm
 openml
@@ -18,3 +19,5 @@ seaborn
 # Utility dependencies often pulled by the above packages
 scipy
 matplotlib
+pytest
+pyarrow

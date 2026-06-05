@@ -8,6 +8,7 @@ dependencies:
   - pandas
   - tabulate
   - jinja2
+  - pyyaml
   - scikit-learn
   - scipy
   - matplotlib
@@ -20,3 +21,5 @@ dependencies:
       - shap
       - lime
       - aime-xai
+      - pytest
+      - pyarrow

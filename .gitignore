@@ -20,6 +20,12 @@ openml_cache/
 
 # Recomputed experiment outputs; precomputed outputs are intentionally tracked
 results_recomputed/
+results/*
+figures/*
+logs/*
+!results/.gitkeep
+!figures/.gitkeep
+!logs/.gitkeep
 
 # Local logs and temporary files
 *.log

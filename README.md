@@ -173,6 +173,8 @@ Smoke runs are intentionally small and are suitable for checking the complete
 pipeline locally:
 
 ```bash
+python -m pip install -e .[dev]
+python -m pytest
 python -m experiments.run_synthetic_calibration --config configs/synthetic.yaml --mode smoke
 python -m experiments.run_openml_benchmark --config configs/openml_cc18.yaml --mode smoke
 python -m experiments.run_stability --config configs/openml_cc18.yaml --mode smoke
@@ -209,6 +211,40 @@ intervals, posterior sign probabilities, `P(|phi_j| > tau)`, mean/std ranks,
 and top-k rank probabilities. Optional SHAP, LIME, and AIME baselines are
 recorded as `skipped` when their dependencies or adapters are unavailable; they
 are not silently ignored.
+
+Synthetic calibration uses known true prototype-contrast attributions from the
+data generator. `coverage_95` measures whether the 95% credible interval
+contains the true attribution. Sign calibration treats exactly zero true
+attributions as neutral and excludes them from sign-calibration denominators;
+the ignored count is reported. The reported sign metrics are:
+
+- `sign_brier_score`: Brier score for predicted sign confidence versus whether
+  the predicted sign is correct.
+- `sign_ece`: expected calibration error over confidence bins.
+- `sign_accuracy_at_confidence_0_8` and
+  `sign_accuracy_at_confidence_0_9`: empirical sign accuracy among features
+  whose predicted sign confidence is at least the threshold.
+- `synthetic_sign_calibration_bins.csv`: reliability-bin audit table.
+
+Faithfulness uses model-output deltas, not distance from the baseline. For each
+feature, the runner replaces only that feature with the baseline value, measures
+the drop in black-box predicted probability for the target class, and reports
+the Spearman correlation between `|attribution_j|` and `|delta_j|` as
+`faithfulness_correlation`.
+
+Full OpenML-CC18 Bayesian experiments are intended to run through the manual
+GitHub Actions workflow **Bayesian OpenML experiment**:
+
+```text
+.github/workflows/bayesian-openml.yml
+```
+
+Start with a small manual run such as `max_tasks=1`, `seeds=[0]`,
+`n_explain=5`, and `posterior_samples=20`; then increase to `medium` or `full`
+once the workflow and optional baseline dependencies are behaving as expected.
+Every push and pull request also runs **Bayesian pipeline CI**, which installs
+the local package, runs `pytest`, executes smoke experiments, aggregates the
+outputs, and uploads `results/`, `figures/`, and `logs/` for debugging.
 
 ### 5.1 Reconstruct manuscript tables
 

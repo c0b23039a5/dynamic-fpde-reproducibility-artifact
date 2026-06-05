@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
@@ -14,7 +15,9 @@ class MethodUnavailable(RuntimeError):
 class BaselineResult:
     attribution: Optional[np.ndarray]
     status: str
-    error: str = ""
+    error_message: str = ""
+    dependency_available: bool = False
+    n_model_calls: int = 0
 
 
 def explain_shap(model: Any, x: np.ndarray, target_label: int) -> np.ndarray:
@@ -73,19 +76,31 @@ def optional_baseline(
     *,
     seed: int = 0,
 ) -> BaselineResult:
+    dependency_name = {
+        "shap": "shap",
+        "lime": "lime",
+        "aime": "aime_xai",
+        "bayesshap": "shap",
+        "bayeslime": "lime",
+        "bayesian_aime": "aime_xai",
+    }.get(method, method)
+    dependency_available = importlib.util.find_spec(dependency_name) is not None
     try:
         if method == "shap":
             attr = explain_shap(model, x, target_label)
+            n_model_calls = 1
         elif method == "lime":
             attr = explain_lime(model, x, X_train, y_train, feature_names, target_label, seed=seed)
+            n_model_calls = 5000
         elif method == "aime":
             attr = explain_aime(model, x, X_train, y_train, feature_names, target_label)
+            n_model_calls = 0
         else:
             raise ValueError(f"unknown baseline method: {method}")
         if attr.shape != x.shape:
             raise ValueError(f"attribution shape {attr.shape} does not match {x.shape}")
-        return BaselineResult(np.asarray(attr, dtype=float), "ok", "")
+        return BaselineResult(np.asarray(attr, dtype=float), "ok", "", dependency_available, n_model_calls)
     except MethodUnavailable as exc:
-        return BaselineResult(None, "skipped", str(exc))
+        return BaselineResult(None, "skipped", str(exc), dependency_available, 0)
     except Exception as exc:
-        return BaselineResult(None, "error", f"{type(exc).__name__}: {exc}")
+        return BaselineResult(None, "error", f"{type(exc).__name__}: {exc}", dependency_available, 0)

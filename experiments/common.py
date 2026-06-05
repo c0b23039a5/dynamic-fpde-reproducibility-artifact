@@ -84,6 +84,8 @@ def evaluate_methods_for_dataset(
     tau: float = 0.0,
     top_k: int = 5,
     lambda_hyb: float = 0.5,
+    mode: str = "",
+    config_hash: str = "",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     prototypes, labels = class_prototypes(X_train, y_train)
     baseline = np.mean(X_train, axis=0)
@@ -96,7 +98,15 @@ def evaluate_methods_for_dataset(
     metric_rows: List[Dict[str, Any]] = []
     local_rows: List[Dict[str, Any]] = []
     runtime_rows: List[Dict[str, Any]] = []
-    metadata = base_metadata(dataset_name=dataset_name, task_id=task_id, seed=seed, fold=fold)
+    metadata = base_metadata(
+        dataset_name=dataset_name,
+        task_id=task_id,
+        seed=seed,
+        fold=fold,
+        split_id=fold,
+        mode=mode,
+        config_hash=config_hash,
+    )
 
     for order, idx in enumerate(indices.tolist()):
         x = X_test[idx]
@@ -107,15 +117,19 @@ def evaluate_methods_for_dataset(
         for method in methods:
             start = time.perf_counter()
             status = "ok"
-            error = ""
+            error_message = ""
             attr: Optional[np.ndarray] = None
             summary: Optional[pd.DataFrame] = None
             target_label = pred_label
             method_key = method.lower()
+            dependency_available = method_key not in OPTIONAL_METHODS
+            n_model_calls = 0
             if method_key in OPTIONAL_METHODS:
                 base_name = {"bayesshap": "shap", "bayeslime": "lime", "bayesian_aime": "aime"}.get(method_key, method_key)
                 result = optional_baseline(base_name, model, x, X_train, y_train, feature_names, target_label, seed=seed)
-                status, error, attr = result.status, result.error, result.attribution
+                status, error_message, attr = result.status, result.error_message, result.attribution
+                dependency_available = bool(result.dependency_available)
+                n_model_calls = int(result.n_model_calls)
             else:
                 try:
                     if method_key in DETERMINISTIC_METHODS:
@@ -124,10 +138,10 @@ def evaluate_methods_for_dataset(
                             cfg = FPDEConfig(mode="hyb", lambda_hyb=lambda_hyb)
                         attr, target_label, _ = explain_fpde(model, x, prototypes, labels, config=cfg, anchor=baseline)
                     elif method_key in BAYESIAN_METHODS:
-                        mode, default_lambda = BAYESIAN_METHODS[method_key]
+                        fpde_mode, default_lambda = BAYESIAN_METHODS[method_key]
                         cfg = BayesianFPDEConfig(
-                            mode=mode,
-                            lambda_hyb=lambda_hyb if mode == "hyb" else default_lambda,
+                            mode=fpde_mode,
+                            lambda_hyb=lambda_hyb if fpde_mode == "hyb" else default_lambda,
                             n_posterior_samples=posterior_samples,
                             tau=tau,
                             top_k=top_k,
@@ -160,16 +174,17 @@ def evaluate_methods_for_dataset(
                         attr = summary["posterior_mean"].to_numpy(dtype=float)
                     else:
                         status = "skipped"
-                        error = f"unknown or optional method not enabled: {method}"
+                        error_message = f"unknown or optional method not enabled: {method}"
                 except Exception as exc:
                     status = "error"
-                    error = f"{type(exc).__name__}: {exc}"
+                    error_message = f"{type(exc).__name__}: {exc}"
             elapsed = float(time.perf_counter() - start)
             row_base = {
                 **metadata,
                 "method": method,
                 "status": status,
-                "error": error,
+                "error_message": error_message,
+                "dependency_available": dependency_available,
                 "explained_index": int(idx),
                 "explained_order": int(order),
                 "true_label": y_true,
@@ -179,12 +194,15 @@ def evaluate_methods_for_dataset(
                 "n_train": int(X_train.shape[0]),
                 "n_test": int(X_test.shape[0]),
                 "runtime_seconds": elapsed,
+                "n_model_calls": n_model_calls,
                 **perf,
             }
-            runtime_rows.append({k: row_base[k] for k in row_base if k not in {"error"}} | {"error": error})
+            runtime_rows.append(dict(row_base))
             if status == "ok" and attr is not None:
                 metric = deletion_insertion_metrics(model, x, attr, baseline, target_label=target_label)
-                metric["number_of_model_calls"] = int(2 * len((0.0, 0.1, 0.2, 0.5, 1.0)) + 1)
+                metric_calls = int(2 * len((0.0, 0.1, 0.2, 0.5, 1.0)) + 1 + x.size)
+                metric["number_of_model_calls"] = n_model_calls or metric_calls
+                metric["n_model_calls"] = n_model_calls or metric_calls
                 metric_rows.append({**row_base, **metric, "top_k_jaccard": np.nan})
                 if summary is not None:
                     for _, feature_row in summary.iterrows():
@@ -210,7 +228,7 @@ def evaluate_methods_for_dataset(
                             }
                         )
             else:
-                metric_rows.append({**row_base, "p0": np.nan, "deletion_auc": np.nan, "deletion_drop_auc": np.nan, "insertion_auc": np.nan, "comprehensiveness": np.nan, "sufficiency": np.nan, "faithfulness_correlation": np.nan, "number_of_model_calls": 0, "top_k_jaccard": np.nan})
+                metric_rows.append({**row_base, "p0": np.nan, "deletion_auc": np.nan, "deletion_drop_auc": np.nan, "insertion_auc": np.nan, "comprehensiveness": np.nan, "sufficiency": np.nan, "faithfulness_correlation": np.nan, "faithfulness_delta_mean": np.nan, "faithfulness_delta_abs_mean": np.nan, "number_of_model_calls": n_model_calls, "top_k_jaccard": np.nan})
     metrics = pd.DataFrame(metric_rows)
     if not metrics.empty:
         det = metrics[metrics["method"].isin(["hyb_fpde", "hyb_fpde_grid"])][["explained_index", "deletion_drop_auc"]]

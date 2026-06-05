@@ -31,8 +31,38 @@ def main() -> int:
     if "combined_score" not in df.columns and {"deletion_drop_auc", "insertion_auc"}.issubset(df.columns):
         df["combined_score"] = (df["deletion_drop_auc"] + df["insertion_auc"]) / 2.0
         metric = "combined_score"
-    tests, effects = method_tests(df[df.get("status", "ok") == "ok"] if not df.empty else df, metric=metric)
-    ci = bootstrap_confidence_intervals(df[df.get("status", "ok") == "ok"] if not df.empty else df, metric=metric, n_bootstrap=200)
+    ok = df[df["status"] == "ok"] if not df.empty and "status" in df.columns else df
+    tests, effects = method_tests(ok, metric=metric)
+    ci = bootstrap_confidence_intervals(ok, metric=metric, n_bootstrap=200)
+    if tests.empty:
+        tests = pd.DataFrame(
+            [
+                {
+                    "test": "not_run",
+                    "metric": metric,
+                    "method_a": "",
+                    "method_b": "",
+                    "statistic": float("nan"),
+                    "p_value": float("nan"),
+                    "p_holm": float("nan"),
+                    "status": "skipped",
+                    "error_message": "insufficient paired method data for statistical tests",
+                }
+            ]
+        )
+    if effects.empty:
+        effects = pd.DataFrame(
+            [
+                {
+                    "metric": metric,
+                    "method_a": "",
+                    "method_b": "",
+                    "cliffs_delta": float("nan"),
+                    "status": "skipped",
+                    "error_message": "insufficient paired method data for effect sizes",
+                }
+            ]
+        )
     write_csv(tests, results_dir / "statistical_tests.csv")
     write_csv(effects, results_dir / "effect_sizes.csv")
     write_csv(ci, results_dir / "bootstrap_confidence_intervals.csv")

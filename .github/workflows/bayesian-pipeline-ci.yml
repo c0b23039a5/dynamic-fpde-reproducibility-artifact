@@ -1,0 +1,55 @@
+name: Bayesian pipeline CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Install Bayesian pipeline
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Run tests
+        run: |
+          python -m pytest
+
+      - name: Run smoke experiments
+        run: |
+          python -m experiments.run_synthetic_calibration --config configs/synthetic.yaml --mode smoke
+          python -m experiments.run_openml_benchmark --config configs/openml_cc18.yaml --mode smoke
+          python -m experiments.run_stability --config configs/openml_cc18.yaml --mode smoke
+          python -m experiments.run_faithfulness --config configs/openml_cc18.yaml --mode smoke
+          python -m experiments.run_training_size_uncertainty --config configs/synthetic.yaml --mode smoke
+          python -m experiments.run_ablation --config configs/ablation.yaml --mode smoke
+          python -m experiments.run_case_studies --config configs/case_study.yaml --mode smoke
+          python -m experiments.aggregate_results --results-dir results --figures-dir figures
+
+      - name: Upload Bayesian smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-pipeline-smoke
+          path: |
+            results/
+            figures/
+            logs/
+          retention-days: 14

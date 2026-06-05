@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import subprocess
@@ -31,7 +32,13 @@ def mode_config(config: Mapping[str, Any], mode: str) -> Dict[str, Any]:
         raise ValueError(f"mode config must be a mapping: {mode}")
     merged.update(selected)
     merged["mode"] = mode
+    merged["config_hash"] = config_hash(merged)
     return merged
+
+
+def config_hash(config: Mapping[str, Any]) -> str:
+    payload = json.dumps(config, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def ensure_dirs(*paths: str | Path) -> None:
@@ -55,9 +62,48 @@ def git_commit() -> str:
 
 
 def base_metadata(**extra: Any) -> Dict[str, Any]:
-    out = {"timestamp": now_iso(), "git_commit": git_commit()}
+    out = {
+        "method": "",
+        "dataset_name": "",
+        "task_id": "",
+        "seed": "",
+        "fold": "",
+        "split_id": "",
+        "mode": "",
+        "config_hash": "",
+        "timestamp": now_iso(),
+        "git_commit": git_commit(),
+        "status": "ok",
+        "error_message": "",
+    }
     out.update(extra)
     return out
+
+
+def normalize_result_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "error" in out.columns and "error_message" not in out.columns:
+        out = out.rename(columns={"error": "error_message"})
+    required = [
+        "method",
+        "dataset_name",
+        "task_id",
+        "seed",
+        "fold",
+        "split_id",
+        "mode",
+        "config_hash",
+        "timestamp",
+        "git_commit",
+        "status",
+        "error_message",
+    ]
+    for col in required:
+        if col not in out.columns:
+            out[col] = ""
+    front = [col for col in required if col in out.columns]
+    rest = [col for col in out.columns if col not in front]
+    return out[front + rest]
 
 
 def setup_logging(log_dir: str | Path = "logs", name: str = "bayesian_fpde") -> logging.Logger:
@@ -78,18 +124,18 @@ def setup_logging(log_dir: str | Path = "logs", name: str = "bayesian_fpde") -> 
 def write_csv(df: pd.DataFrame, path: str | Path) -> None:
     path = Path(path)
     ensure_dirs(path.parent)
-    df.to_csv(path, index=False, lineterminator="\n")
+    normalize_result_columns(df).to_csv(path, index=False, lineterminator="\n")
 
 
 def write_parquet_or_csv(df: pd.DataFrame, path: str | Path) -> Path:
     path = Path(path)
     ensure_dirs(path.parent)
     try:
-        df.to_parquet(path, index=False)
+        normalize_result_columns(df).to_parquet(path, index=False)
         return path
     except Exception:
         fallback = path.with_suffix(path.suffix + ".csv")
-        df.to_csv(fallback, index=False, lineterminator="\n")
+        normalize_result_columns(df).to_csv(fallback, index=False, lineterminator="\n")
         return fallback
 
 

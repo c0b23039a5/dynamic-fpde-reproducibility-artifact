@@ -51,7 +51,7 @@ def main() -> int:
             )
             samples.append(result.summary["posterior_mean"].to_numpy(dtype=float))
         metrics = stability_metrics(np.asarray(samples), top_k=top_k)
-        rows.append({**base_metadata(**data.metadata), "method": "bayesian_hyb_fpde", "status": "ok", "error": "", "posterior_rank_std": float(np.nanmean([metrics.get("rank_entropy", np.nan)])), **metrics})
+        rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_bootstrap", "split_id": "synthetic_bootstrap", "mode": str(cfg.get("mode", "")), "config_hash": str(cfg.get("config_hash", "")), "status": "ok", "error_message": ""}), "posterior_rank_std": float(np.nanmean([metrics.get("rank_entropy", np.nan)])), **metrics})
         logger.info("stability completed seed=%s", seed)
     df = pd.DataFrame(rows)
     write_csv(df, results_dir / "stability_metrics.csv")

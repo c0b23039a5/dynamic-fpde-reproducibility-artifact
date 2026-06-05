@@ -37,6 +37,8 @@ def main() -> int:
                 posterior_samples=int(cfg.get("posterior_samples", 100)),
                 top_k=int(cfg.get("top_k", 5)),
                 lambda_hyb=float(cfg.get("lambda_hyb", 0.5)),
+                mode=str(cfg.get("mode", "")),
+                config_hash=str(cfg.get("config_hash", "")),
             )
             frames.append(metrics)
             logger.info("faithfulness completed dataset=%s seed=%s", dataset_name, seed)

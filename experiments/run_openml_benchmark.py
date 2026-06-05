@@ -42,6 +42,8 @@ def main() -> int:
                 tau=float(cfg.get("tau", 0.0)),
                 top_k=int(cfg.get("top_k", 5)),
                 lambda_hyb=float(cfg.get("lambda_hyb", 0.5)),
+                mode=str(cfg.get("mode", "")),
+                config_hash=str(cfg.get("config_hash", "")),
             )
             all_local.append(local)
             all_metrics.append(metrics)

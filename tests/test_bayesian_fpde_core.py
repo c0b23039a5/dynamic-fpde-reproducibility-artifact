@@ -7,7 +7,7 @@ from bayesian_fpde.baselines import optional_baseline
 from bayesian_fpde.bayesian_fpde import BayesianFPDEConfig, explain_bayesian_fpde
 from bayesian_fpde.datasets import generate_synthetic_gaussian
 from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde, true_fpde_attribution
-from bayesian_fpde.metrics import calibration_metrics, deletion_insertion_metrics
+from bayesian_fpde.metrics import calibration_metrics, deletion_insertion_metrics, replacement_values, sign_reliability_bins
 from bayesian_fpde.prototypes import NIGPrior, fit_nig_posteriors, sample_posterior_prototypes
 
 
@@ -69,10 +69,22 @@ def test_deletion_metric_and_synthetic_coverage():
     result = explain_bayesian_fpde(model, data.X[0], data.X, data.y, config=BayesianFPDEConfig(n_posterior_samples=25), seed=5)
     attr = result.summary["posterior_mean"].to_numpy(dtype=float)
     metrics = deletion_insertion_metrics(model, data.X[0], attr, np.mean(data.X, axis=0), target_label=result.positive_label)
-    assert {"deletion_auc", "insertion_auc", "faithfulness_correlation"}.issubset(metrics)
+    assert {"deletion_auc", "insertion_auc", "faithfulness_correlation", "faithfulness_delta_mean", "faithfulness_delta_abs_mean"}.issubset(metrics)
     truth = true_fpde_attribution(data.X[0], data.true_prototypes, data.labels, positive_label=result.positive_label, negative_label=result.negative_label)
     cal = calibration_metrics(result.summary, truth, top_k=3)
     assert 0.0 <= cal["coverage_95"] <= 1.0
+    assert {"sign_brier_score", "sign_ece", "sign_accuracy_at_confidence_0_8", "sign_accuracy_at_confidence_0_9"}.issubset(cal)
+    bins = sign_reliability_bins(result.summary, truth, n_bins=5)
+    assert len(bins) == 5
+
+
+def test_replacement_values_class_conditional_and_sampling():
+    X = np.array([[1.0, 10.0], [3.0, 30.0], [100.0, 200.0]])
+    y = np.array([0, 0, 1])
+    assert np.allclose(replacement_values(X, strategy="mean"), [104.0 / 3.0, 80.0])
+    assert np.allclose(replacement_values(X, y, target_label=0, strategy="class_conditional_mean"), [2.0, 20.0])
+    assert replacement_values(X, strategy="marginal_sampling", rng=np.random.default_rng(1)).shape == (2,)
+    assert replacement_values(X, strategy="permutation", rng=np.random.default_rng(1)).shape == (2,)
 
 
 def test_optional_baseline_skip_record_for_unknown_dependency_path():
@@ -80,3 +92,5 @@ def test_optional_baseline_skip_record_for_unknown_dependency_path():
     result = optional_baseline("aime", model, data.X[0], data.X, data.y, data.feature_names, int(model.classes_[0]), seed=0)
     assert result.status in {"skipped", "error"}
     assert result.attribution is None
+    assert result.error_message
+    assert result.dependency_available in {True, False}

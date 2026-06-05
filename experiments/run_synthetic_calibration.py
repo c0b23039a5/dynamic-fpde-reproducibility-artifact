@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 from bayesian_fpde.bayesian_fpde import BayesianFPDEConfig, explain_bayesian_fpde
 from bayesian_fpde.datasets import fit_black_box, generate_synthetic_gaussian
 from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde, true_fpde_attribution
-from bayesian_fpde.metrics import calibration_metrics
+from bayesian_fpde.metrics import calibration_metrics, sign_reliability_bins
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, setup_logging, write_csv, write_json
 from experiments.common import parser_with_config, load_mode_config
@@ -38,10 +38,12 @@ def main() -> int:
     top_k = int(cfg.get("top_k", 5))
     tau = float(cfg.get("tau", 0.0))
     lambda_hyb = float(cfg.get("lambda_hyb", 0.5))
+    sign_bins = int(cfg.get("sign_calibration_bins", 10))
     methods = cfg.get("methods", ["bayesian_hyb_fpde"])
 
     rows: List[Dict[str, Any]] = []
     local_rows: List[Dict[str, Any]] = []
+    bin_rows: List[pd.DataFrame] = []
     for seed in seeds:
         for n_samples in n_samples_values:
             for n_features in n_features_values:
@@ -121,18 +123,41 @@ def main() -> int:
                                                 feature_names=data.feature_names,
                                                 seed=int(seed) + order,
                                             )
-                                            metric = calibration_metrics(result.summary, true_attr, top_k=top_k)
+                                            row_meta = base_metadata(
+                                                **{
+                                                    **data.metadata,
+                                                    "method": method,
+                                                    "seed": int(seed),
+                                                    "fold": "synthetic_random_split",
+                                                    "split_id": "synthetic_random_split",
+                                                    "mode": str(cfg.get("mode", "")),
+                                                    "config_hash": str(cfg.get("config_hash", "")),
+                                                    "status": "ok",
+                                                    "error_message": "",
+                                                }
+                                            )
+                                            metric = calibration_metrics(result.summary, true_attr, top_k=top_k, sign_bins=sign_bins)
                                             per_instance_metrics.append(metric)
+                                            bin_rows.append(
+                                                sign_reliability_bins(
+                                                    result.summary,
+                                                    true_attr,
+                                                    n_bins=sign_bins,
+                                                    metadata={
+                                                        **row_meta,
+                                                        "explained_index": int(idx),
+                                                        "explained_order": int(order),
+                                                    },
+                                                )
+                                            )
                                             meta = {
-                                                **base_metadata(**data.metadata),
+                                                **row_meta,
                                                 "method": method,
                                                 "model": model_name,
                                                 "explained_index": int(idx),
                                                 "explained_order": int(order),
                                                 "positive_label": int(c_plus),
                                                 "negative_label": int(c_minus),
-                                                "status": "ok",
-                                                "error": "",
                                             }
                                             for _, feature_row in result.summary.iterrows():
                                                 out = {**meta, **feature_row.to_dict()}
@@ -141,13 +166,33 @@ def main() -> int:
                                                 local_rows.append(out)
                                         if per_instance_metrics:
                                             avg = pd.DataFrame(per_instance_metrics).mean(numeric_only=True).to_dict()
-                                            rows.append({**base_metadata(**data.metadata), "method": method, "model": model_name, "status": "ok", "error": "", **avg})
+                                            rows.append(
+                                                {
+                                                    **base_metadata(
+                                                        **{
+                                                            **data.metadata,
+                                                            "method": method,
+                                                            "seed": int(seed),
+                                                            "fold": "synthetic_random_split",
+                                                            "split_id": "synthetic_random_split",
+                                                            "mode": str(cfg.get("mode", "")),
+                                                            "config_hash": str(cfg.get("config_hash", "")),
+                                                            "status": "ok",
+                                                            "error_message": "",
+                                                        }
+                                                    ),
+                                                    "model": model_name,
+                                                    **avg,
+                                                }
+                                            )
                                     logger.info("completed synthetic seed=%s n=%s p=%s", seed, n_samples, n_features)
 
     detail = pd.DataFrame(local_rows)
     summary = pd.DataFrame(rows)
     write_csv(detail, results_dir / "synthetic_calibration.csv")
     write_csv(summary, results_dir / "synthetic_calibration_summary.csv")
+    bins = pd.concat(bin_rows, ignore_index=True) if bin_rows else pd.DataFrame()
+    write_csv(bins, results_dir / "synthetic_sign_calibration_bins.csv")
     save_line_plot(summary, x="n_samples", y="coverage_95", group="method", path=figures_dir / "synthetic_coverage_vs_n.png", title="Synthetic coverage vs n")
     save_line_plot(summary, x="n_samples", y="mean_ci_width", group="method", path=figures_dir / "synthetic_ci_width_vs_n.png", title="Synthetic CI width vs n")
     write_json({"config": cfg, "n_rows": int(len(summary))}, results_dir / "synthetic_calibration_metadata.json")

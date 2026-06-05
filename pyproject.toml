@@ -1,3 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bayesian-fpde-reproducibility-artifact"
+version = "0.1.0"
+description = "Reproducible Bayesian-FPDE experimental pipeline for uncertainty-aware prototype-contrast attributions."
+requires-python = ">=3.12"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "scipy",
+  "matplotlib",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pyarrow",
+]
+openml = [
+  "openml",
+  "lightgbm",
+  "pyarrow",
+]
+baselines = [
+  "shap",
+  "lime",
+  "aime-xai",
+  "umap-learn",
+  "seaborn",
+]
+
+[tool.setuptools.packages.find]
+include = ["bayesian_fpde*", "experiments*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

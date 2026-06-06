@@ -69,6 +69,8 @@ def _condition_metadata(
         "class_balance": str(balance),
         "posterior_samples": int(posterior_samples),
         "n_explain": int(n_explain),
+        "requested_n_explain": int(n_explain),
+        "selection_policy": "correctly_classified_only",
         "top_k": int(top_k),
         "tau": float(tau),
         "lambda_hyb": float(lambda_hyb),
@@ -147,6 +149,7 @@ def main() -> int:
     tau = float(cfg.get("tau", 0.0))
     lambda_hyb = float(cfg.get("lambda_hyb", 0.5))
     sign_bins = int(cfg.get("sign_calibration_bins", 10))
+    low_effective_threshold = float(cfg.get("low_effective_n_explain_threshold", 0.5))
     methods = cfg.get("methods", ["bayesian_hyb_fpde"])
 
     rows: List[Dict[str, Any]] = []
@@ -202,7 +205,19 @@ def main() -> int:
                                         eligible = np.where(pred == y_test)[0]
                                         if eligible.size == 0:
                                             eligible = np.arange(len(y_test))
+                                            selection_policy = "all_test_samples"
+                                        else:
+                                            selection_policy = "correctly_classified_only"
                                         eligible = eligible[: min(n_explain, eligible.size)]
+                                        effective_n_explain = int(eligible.size)
+                                        condition_with_counts = {
+                                            **condition,
+                                            "selection_policy": selection_policy,
+                                            "effective_n_explain": effective_n_explain,
+                                            "n_explanation_rows": int(effective_n_explain * int(n_features)),
+                                            "n_unique_explanation_units": effective_n_explain,
+                                            "low_effective_n_explain_warning": bool(effective_n_explain < low_effective_threshold * n_explain),
+                                        }
                                         for method in methods:
                                             mode = "hyb"
                                             if "diff" in method:
@@ -222,7 +237,7 @@ def main() -> int:
                                                 tau=tau,
                                                 top_k=top_k,
                                                 lambda_hyb=lambda_hyb,
-                                                extra_context=condition,
+                                                extra_context=condition_with_counts,
                                             )
                                             per_instance_metrics = []
                                             for order, idx in enumerate(eligible.tolist()):
@@ -262,7 +277,7 @@ def main() -> int:
                                                     feature_names=data.feature_names,
                                                     seed=int(seed) + order,
                                                 )
-                                                row_meta = _summary_metadata(cfg, condition=condition, method=method, job_hashes=job_hashes, status="ok")
+                                                row_meta = _summary_metadata(cfg, condition=condition_with_counts, method=method, job_hashes=job_hashes, status="ok")
                                                 metric = calibration_metrics(result.summary, true_attr, top_k=top_k, sign_bins=sign_bins)
                                                 per_instance_metrics.append(metric)
                                                 bin_rows.append(
@@ -288,6 +303,7 @@ def main() -> int:
                                                 }
                                                 for _, feature_row in result.summary.iterrows():
                                                     out = {**meta, **feature_row.to_dict()}
+                                                    out["attribution"] = float(feature_row["posterior_mean"])
                                                     out["true_attribution"] = float(true_attr[int(feature_row["feature_index"])])
                                                     out["deterministic_fpde_score"] = float(det_attr[int(feature_row["feature_index"])])
                                                     local_rows.append(out)
@@ -295,7 +311,7 @@ def main() -> int:
                                                 avg = pd.DataFrame(per_instance_metrics).mean(numeric_only=True).to_dict()
                                                 rows.append(
                                                     {
-                                                        **_summary_metadata(cfg, condition=condition, method=method, job_hashes=job_hashes, status="ok"),
+                                                        **_summary_metadata(cfg, condition=condition_with_counts, method=method, job_hashes=job_hashes, status="ok"),
                                                         "model": model_name,
                                                         **avg,
                                                     }
@@ -313,6 +329,13 @@ def main() -> int:
                                             balance,
                                         )
                                         for method in methods:
+                                            condition_with_counts = {
+                                                **condition,
+                                                "effective_n_explain": 0,
+                                                "n_explanation_rows": 0,
+                                                "n_unique_explanation_units": 0,
+                                                "low_effective_n_explain_warning": True,
+                                            }
                                             job_hashes = config_hashes_for_job(
                                                 cfg,
                                                 dataset_name="synthetic_gaussian",
@@ -325,11 +348,11 @@ def main() -> int:
                                                 tau=tau,
                                                 top_k=top_k,
                                                 lambda_hyb=lambda_hyb,
-                                                extra_context=condition,
+                                                extra_context=condition_with_counts,
                                             )
                                             rows.append(
                                                 {
-                                                    **_summary_metadata(cfg, condition=condition, method=method, job_hashes=job_hashes, status="error", error_message=error_message),
+                                                    **_summary_metadata(cfg, condition=condition_with_counts, method=method, job_hashes=job_hashes, status="error", error_message=error_message),
                                                     "model": str(cfg.get("model", "random_forest")),
                                                     **{name: np.nan for name in SYNTHETIC_METRIC_COLUMNS},
                                                 }

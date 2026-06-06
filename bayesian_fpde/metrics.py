@@ -95,7 +95,7 @@ def sign_reliability_bins(summary, truth: np.ndarray, *, n_bins: int = 10, metad
                 "bin_id": int(bin_id),
                 "bin_lower": lo,
                 "bin_upper": hi,
-                "n_features": n,
+                "bin_feature_count": n,
                 "bin_weight": float(n / total) if total else 0.0,
                 "mean_confidence": mean_conf,
                 "sign_accuracy": acc,

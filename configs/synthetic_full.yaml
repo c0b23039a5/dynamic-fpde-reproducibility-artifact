@@ -8,6 +8,7 @@ top_k: 5
 tau: 0.0
 lambda_hyb: 0.5
 sign_calibration_bins: 10
+low_effective_n_explain_threshold: 0.5
 test_size: 0.3
 model: random_forest
 methods:

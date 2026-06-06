@@ -80,6 +80,8 @@ def test_deletion_metric_and_synthetic_coverage():
     assert {"sign_brier_score", "sign_ece", "sign_accuracy_at_confidence_0_8", "sign_accuracy_at_confidence_0_9"}.issubset(cal)
     bins = sign_reliability_bins(result.summary, truth, n_bins=5)
     assert len(bins) == 5
+    assert "bin_feature_count" in bins.columns
+    assert "n_features" not in bins.columns
 
 
 def test_replacement_values_class_conditional_and_sampling():

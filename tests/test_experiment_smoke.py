@@ -76,6 +76,12 @@ def test_all_smoke_commands_and_outputs():
             "class_balance",
             "posterior_samples",
             "n_explain",
+            "requested_n_explain",
+            "effective_n_explain",
+            "n_explanation_rows",
+            "n_unique_explanation_units",
+            "selection_policy",
+            "low_effective_n_explain_warning",
             "top_k",
             "tau",
             "lambda_hyb",
@@ -92,7 +98,19 @@ def test_all_smoke_commands_and_outputs():
             "kendall_tau",
         },
     )
-    _csv("results/synthetic_sign_calibration_bins.csv", REQUIRED_METADATA | {"bin_id", "mean_confidence", "sign_accuracy"})
+    synthetic_detail = _csv("results/synthetic_calibration.csv", REQUIRED_METADATA | {"feature", "feature_index", "attribution", "true_attribution"})
+    synthetic_bins = _csv("results/synthetic_sign_calibration_bins.csv", REQUIRED_METADATA | {"bin_id", "bin_feature_count", "bin_weight", "mean_confidence", "sign_accuracy", "n_features"})
+    assert set(synthetic_bins["n_features"].astype(int).unique()).issubset({8})
+    assert synthetic_bins["bin_feature_count"].astype(int).ge(0).all()
+    assert set(synthetic_bins["bin_id"].astype(int).unique()) == set(range(10))
+    ok_synthetic = synthetic[synthetic["status"] == "ok"].copy()
+    assert ok_synthetic["effective_n_explain"].astype(int).le(ok_synthetic["requested_n_explain"].astype(int)).all()
+    assert ok_synthetic["effective_n_explain"].astype(int).gt(0).all()
+    condition_cols = ["method", "seed", "n_samples", "n_features", "n_informative", "n_classes", "class_separation", "feature_correlation", "class_balance"]
+    detail_counts = synthetic_detail.groupby(condition_cols, dropna=False).size().reset_index(name="detail_rows")
+    merged_counts = ok_synthetic.merge(detail_counts, on=condition_cols, how="left")
+    assert (merged_counts["n_explanation_rows"].astype(int) == merged_counts["detail_rows"].astype(int)).all()
+    assert (merged_counts["n_unique_explanation_units"].astype(int) == merged_counts["effective_n_explain"].astype(int)).all()
     assert (ROOT / "figures" / "synthetic_coverage_vs_n.png").exists()
     assert (ROOT / "figures" / "synthetic_ci_width_vs_n.png").exists()
     assert (ROOT / "figures" / "synthetic_sign_ece_vs_n.png").exists()

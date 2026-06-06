@@ -219,7 +219,8 @@ python -m experiments.run_synthetic_calibration --config configs/synthetic_full.
 ```
 
 Use `smoke` for end-to-end checks, `pilot` for runtime estimation and output
-validation, and `full` for paper-scale synthetic calibration. The full run
+validation, and `full` for paper-scale synthetic calibration. Pilot outputs are
+engineering checks only and must not be treated as final paper results. The full run
 covers `n_samples=[50,100,500,1000]`,
 `n_features=[10,50,100]`, `n_informative=[3,5,10]`, three class-separation
 levels, independent/correlated features, balanced/imbalanced classes, and five
@@ -281,7 +282,28 @@ sign calibration metrics are:
 - `sign_accuracy_at_confidence_0_8` and
   `sign_accuracy_at_confidence_0_9`: empirical sign accuracy among features
   whose predicted sign confidence is at least the threshold.
-- `synthetic_sign_calibration_bins.csv`: reliability-bin audit table.
+- `synthetic_sign_calibration_bins.csv`: reliability-bin audit table. In this
+  file, `n_features` remains the condition-level synthetic feature count
+  (`10`, `50`, or `100` in the full grid). `bin_feature_count` is the number of
+  non-neutral true-attribution features assigned to a reliability bin, and
+  `bin_weight` is the fraction of non-neutral features in that bin.
+
+Synthetic summaries also report explanation-count metadata:
+
+- `requested_n_explain`: requested maximum number of explained test instances.
+- `effective_n_explain`: actual number of explained instances selected for the
+  condition.
+- `n_explanation_rows`: attribution rows contributing to the condition summary;
+  normally `effective_n_explain * n_features`.
+- `n_unique_explanation_units`: unique explained instances contributing to the
+  condition summary.
+- `selection_policy`: currently `correctly_classified_only`, falling back to
+  `all_test_samples` if no correctly classified test samples are available.
+- `low_effective_n_explain_warning`: true when `effective_n_explain` is below
+  the configured threshold, defaulting to half of `requested_n_explain`.
+
+Inspect `low_effective_n_explain_warning` before interpreting pilot or full
+calibration metrics, especially for small or difficult synthetic conditions.
 
 Faithfulness uses model-output deltas, not distance from the baseline. For each
 feature, the runner replaces only that feature with the baseline value, measures

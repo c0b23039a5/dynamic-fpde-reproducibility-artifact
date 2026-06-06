@@ -213,13 +213,18 @@ Full synthetic calibration for paper reporting is configured separately in
 `configs/synthetic_full.yaml`:
 
 ```bash
+python -m experiments.run_synthetic_calibration --config configs/synthetic_full.yaml --mode smoke
+python -m experiments.run_synthetic_calibration --config configs/synthetic_full.yaml --mode pilot
 python -m experiments.run_synthetic_calibration --config configs/synthetic_full.yaml --mode full
 ```
 
-This run covers `n_samples=[50,100,500,1000]`,
+Use `smoke` for end-to-end checks, `pilot` for runtime estimation and output
+validation, and `full` for paper-scale synthetic calibration. The full run
+covers `n_samples=[50,100,500,1000]`,
 `n_features=[10,50,100]`, `n_informative=[3,5,10]`, three class-separation
 levels, independent/correlated features, balanced/imbalanced classes, and five
-seeds. It writes:
+seeds. The pilot grid is deliberately smaller and must not be reported as final
+paper results. All modes write:
 
 - `results/synthetic_calibration.csv`
 - `results/synthetic_calibration_summary.csv`
@@ -232,6 +237,28 @@ seeds. It writes:
 The full grid is intentionally large. Run the smoke mode first, then launch the
 full command on a machine or CI runner with enough CPU time. Do not copy numbers
 into the manuscript unless they were produced by an actual completed run.
+For partial local runs, the synthetic runner accepts filters such as:
+
+```bash
+python -m experiments.run_synthetic_calibration \
+  --config configs/synthetic_full.yaml \
+  --mode full \
+  --seed 0 \
+  --n-samples 50,100 \
+  --n-features 10 \
+  --feature-correlation independent \
+  --class-balance balanced
+```
+
+The optional GitHub Actions workflow `.github/workflows/synthetic-calibration.yml`
+can run `smoke`, `pilot`, or `full` by manual dispatch. It supports input
+overrides for `seeds`, `posterior_samples`, and `n_explain`. For full mode, the
+workflow splits work across a matrix over seed, sample-size group, feature-size
+group, feature correlation, and class balance. Each matrix job uploads partial
+synthetic outputs; the aggregate job combines them into the same CSV files and
+four figures listed above while preserving SHA and hash metadata as strings.
+Failed synthetic conditions are recorded with `status="error"` and an
+`error_message` in the summary instead of being silently dropped.
 
 Bayesian-FPDE reports posterior mean, posterior standard deviation, 95% credible
 intervals, posterior sign probabilities, `P(|phi_j| > tau)`, mean/std ranks,

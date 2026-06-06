@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from experiments.common import _openml_summary
+from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.stats import bootstrap_confidence_intervals, method_tests
 from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso, read_csv_preserve_metadata
 
@@ -57,6 +58,26 @@ def combine_openml_task_outputs(root: str | Path, out: str | Path) -> None:
         local_frames.append(read_csv_preserve_metadata(path))
     if local_frames:
         pd.concat(local_frames, ignore_index=True, sort=False).to_parquet(out / "openml_local_explanations.parquet", index=False)
+
+
+def combine_synthetic_task_outputs(root: str | Path, results_dir: str | Path, figures_dir: str | Path) -> None:
+    root = Path(root)
+    results_dir = Path(results_dir)
+    figures_dir = Path(figures_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in ["synthetic_calibration.csv", "synthetic_calibration_summary.csv", "synthetic_sign_calibration_bins.csv"]:
+        frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
+        if frames:
+            pd.concat(frames, ignore_index=True, sort=False).to_csv(results_dir / name, index=False, lineterminator="\n")
+
+    summary_path = results_dir / "synthetic_calibration_summary.csv"
+    summary = read_csv_preserve_metadata(summary_path) if summary_path.exists() else pd.DataFrame()
+    save_line_plot(summary, x="n_samples", y="coverage_95", group="method", path=figures_dir / "synthetic_coverage_vs_n.png", title="Synthetic coverage vs n")
+    save_line_plot(summary, x="n_samples", y="mean_ci_width", group="method", path=figures_dir / "synthetic_ci_width_vs_n.png", title="Synthetic CI width vs n")
+    save_line_plot(summary, x="n_samples", y="sign_ece", group="method", path=figures_dir / "synthetic_sign_ece_vs_n.png", title="Synthetic sign ECE vs n")
+    save_line_plot(summary, x="n_samples", y="top_k_precision", group="method", path=figures_dir / "synthetic_topk_precision.png", title="Synthetic top-k precision")
 
 
 def main() -> int:

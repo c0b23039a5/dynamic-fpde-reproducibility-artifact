@@ -53,8 +53,12 @@ def parser_with_config(description: str) -> argparse.ArgumentParser:
     return parser
 
 
-def load_mode_config(path: str, mode: str, *, runner_name: str = "") -> Dict[str, Any]:
-    return mode_config(load_yaml(path), mode, runner_name=runner_name)
+def load_mode_config(path: str, mode: str, *, runner_name: str = "", runner_invocation_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    raw = load_yaml(path)
+    if runner_invocation_context:
+        raw = dict(raw)
+        raw["runner_invocation_context"] = runner_invocation_context
+    return mode_config(raw, mode, runner_name=runner_name)
 
 
 def job_config_hash_for(
@@ -77,6 +81,7 @@ def job_config_hash_for(
     top_k: int = 0,
     lambda_hyb: float = 0.0,
     max_background: int = 0,
+    extra_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Hash the job-specific knobs that distinguish dataset/seed/fold work."""
 
@@ -99,6 +104,7 @@ def job_config_hash_for(
             "top_k": int(top_k),
             "lambda_hyb": float(lambda_hyb),
             "max_background": int(max_background),
+            "extra_context": extra_context or {},
         }
     )
 
@@ -119,6 +125,7 @@ def config_hashes_for_job(
     top_k: int = 0,
     lambda_hyb: float = 0.0,
     max_background: int = 0,
+    extra_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     experiment_hash = str(cfg.get("experiment_config_hash", cfg.get("config_hash", "")))
     workflow_run_id = str(cfg.get("workflow_run_id", ""))
@@ -155,6 +162,7 @@ def config_hashes_for_job(
             top_k=top_k,
             lambda_hyb=lambda_hyb,
             max_background=max_background,
+            extra_context=extra_context,
         ),
     }
 

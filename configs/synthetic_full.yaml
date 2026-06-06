@@ -35,4 +35,16 @@ modes:
       class_separation: [medium]
       feature_correlation: [independent]
       class_balance: [balanced]
+  pilot:
+    seeds: [0, 1]
+    posterior_samples: 200
+    n_explain: 20
+    grid:
+      n_samples: [50, 100, 500]
+      n_features: [10, 50]
+      n_informative: [3, 5]
+      n_classes: [2]
+      class_separation: [small, medium]
+      feature_correlation: [independent, correlated]
+      class_balance: [balanced, imbalanced]
   full: {}

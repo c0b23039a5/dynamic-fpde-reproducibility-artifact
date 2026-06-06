@@ -67,6 +67,18 @@ def test_all_smoke_commands_and_outputs():
         "results/synthetic_calibration_summary.csv",
         REQUIRED_METADATA
         | {
+            "n_samples",
+            "n_features",
+            "n_informative",
+            "n_classes",
+            "class_separation",
+            "feature_correlation",
+            "class_balance",
+            "posterior_samples",
+            "n_explain",
+            "top_k",
+            "tau",
+            "lambda_hyb",
             "coverage_95",
             "mean_ci_width",
             "median_ci_width",
@@ -162,6 +174,16 @@ def test_synthetic_full_config_contains_paper_grid():
     assert grid["class_balance"] == ["balanced", "imbalanced"]
     assert cfg["seeds"] == [0, 1, 2, 3, 4]
     assert "full" in cfg["modes"]
+    pilot = cfg["modes"]["pilot"]
+    assert pilot["seeds"] == [0, 1]
+    assert pilot["posterior_samples"] == 200
+    assert pilot["n_explain"] == 20
+    assert pilot["grid"]["n_samples"] == [50, 100, 500]
+    assert pilot["grid"]["n_features"] == [10, 50]
+    assert pilot["grid"]["n_informative"] == [3, 5]
+    assert pilot["grid"]["class_separation"] == ["small", "medium"]
+    assert pilot["grid"]["feature_correlation"] == ["independent", "correlated"]
+    assert pilot["grid"]["class_balance"] == ["balanced", "imbalanced"]
 
 
 def test_openml_raw_metrics_have_single_experiment_hash_and_job_hashes_vary(tmp_path: Path):

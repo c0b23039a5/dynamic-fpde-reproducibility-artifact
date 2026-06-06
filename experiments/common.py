@@ -53,13 +53,16 @@ def parser_with_config(description: str) -> argparse.ArgumentParser:
     return parser
 
 
-def load_mode_config(path: str, mode: str) -> Dict[str, Any]:
-    return mode_config(load_yaml(path), mode)
+def load_mode_config(path: str, mode: str, *, runner_name: str = "") -> Dict[str, Any]:
+    return mode_config(load_yaml(path), mode, runner_name=runner_name)
 
 
 def job_config_hash_for(
     *,
-    run_config_hash: str,
+    experiment_config_hash: str = "",
+    runner_invocation_hash: str = "",
+    workflow_run_id: str = "",
+    run_config_hash: str = "",
     mode: str,
     dataset_name: str,
     task_id: int | str = "",
@@ -79,7 +82,9 @@ def job_config_hash_for(
 
     return stable_config_hash(
         {
-            "run_config_hash": run_config_hash,
+            "experiment_config_hash": experiment_config_hash or run_config_hash,
+            "workflow_run_id": workflow_run_id,
+            "runner_invocation_hash": runner_invocation_hash or run_config_hash,
             "mode": mode,
             "dataset_name": dataset_name,
             "task_id": task_id,
@@ -115,12 +120,19 @@ def config_hashes_for_job(
     lambda_hyb: float = 0.0,
     max_background: int = 0,
 ) -> Dict[str, str]:
-    run_hash = str(cfg.get("run_config_hash", cfg.get("config_hash", "")))
+    experiment_hash = str(cfg.get("experiment_config_hash", cfg.get("config_hash", "")))
+    workflow_run_id = str(cfg.get("workflow_run_id", ""))
+    runner_hash = str(cfg.get("runner_invocation_hash", cfg.get("run_config_hash", experiment_hash)))
     return {
-        "config_hash": run_hash,
-        "run_config_hash": run_hash,
+        "config_hash": experiment_hash,
+        "experiment_config_hash": experiment_hash,
+        "workflow_run_id": workflow_run_id,
+        "runner_invocation_hash": runner_hash,
+        "run_config_hash": runner_hash,
         "job_config_hash": job_config_hash_for(
-            run_config_hash=run_hash,
+            experiment_config_hash=experiment_hash,
+            workflow_run_id=workflow_run_id,
+            runner_invocation_hash=runner_hash,
             mode=str(cfg.get("mode", "")),
             dataset_name=dataset_name,
             task_id=task_id,
@@ -171,6 +183,9 @@ def evaluate_methods_for_dataset(
     mode: str = "",
     config_hash: str = "",
     run_config_hash: str = "",
+    experiment_config_hash: str = "",
+    workflow_run_id: str = "",
+    runner_invocation_hash: str = "",
     job_config_hash: str = "",
     max_background: int = 100,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -185,23 +200,30 @@ def evaluate_methods_for_dataset(
     metric_rows: List[Dict[str, Any]] = []
     local_rows: List[Dict[str, Any]] = []
     runtime_rows: List[Dict[str, Any]] = []
-    effective_run_config_hash = str(run_config_hash or config_hash)
-    effective_job_config_hash = job_config_hash_for(
-        run_config_hash=effective_run_config_hash,
-        mode=mode,
-        dataset_name=dataset_name,
-        task_id=task_id,
-        seed=seed,
-        fold=fold,
-        split_id=fold,
-        methods=methods,
-        n_explain=n_explain,
-        posterior_samples=posterior_samples,
-        bootstrap_samples=bootstrap_samples,
-        tau=tau,
-        top_k=top_k,
-        lambda_hyb=lambda_hyb,
-        max_background=max_background,
+    effective_experiment_config_hash = str(experiment_config_hash or config_hash or run_config_hash)
+    effective_workflow_run_id = str(workflow_run_id)
+    effective_runner_invocation_hash = str(runner_invocation_hash or run_config_hash or effective_experiment_config_hash)
+    effective_job_config_hash = str(
+        job_config_hash
+        or job_config_hash_for(
+            experiment_config_hash=effective_experiment_config_hash,
+            workflow_run_id=effective_workflow_run_id,
+            runner_invocation_hash=effective_runner_invocation_hash,
+            mode=mode,
+            dataset_name=dataset_name,
+            task_id=task_id,
+            seed=seed,
+            fold=fold,
+            split_id=fold,
+            methods=methods,
+            n_explain=n_explain,
+            posterior_samples=posterior_samples,
+            bootstrap_samples=bootstrap_samples,
+            tau=tau,
+            top_k=top_k,
+            lambda_hyb=lambda_hyb,
+            max_background=max_background,
+        )
     )
     metadata = base_metadata(
         dataset_name=dataset_name,
@@ -210,8 +232,11 @@ def evaluate_methods_for_dataset(
         fold=fold,
         split_id=fold,
         mode=mode,
-        config_hash=effective_run_config_hash,
-        run_config_hash=effective_run_config_hash,
+        config_hash=effective_experiment_config_hash,
+        experiment_config_hash=effective_experiment_config_hash,
+        workflow_run_id=effective_workflow_run_id,
+        runner_invocation_hash=effective_runner_invocation_hash,
+        run_config_hash=effective_runner_invocation_hash,
         job_config_hash=effective_job_config_hash,
     )
 
@@ -447,17 +472,37 @@ def _unique_explanation_units(group: pd.DataFrame) -> int:
 
 
 def _hash_consistency(group: pd.DataFrame) -> pd.Series:
-    run_hashes = _unique_nonempty(group["run_config_hash"]) if "run_config_hash" in group.columns else []
+    experiment_hashes = _unique_nonempty(group["experiment_config_hash"]) if "experiment_config_hash" in group.columns else []
+    if not experiment_hashes:
+        experiment_hashes = _unique_nonempty(group["config_hash"]) if "config_hash" in group.columns else []
+    workflow_ids = _unique_nonempty(group["workflow_run_id"]) if "workflow_run_id" in group.columns else []
+    runner_hashes = _unique_nonempty(group["runner_invocation_hash"]) if "runner_invocation_hash" in group.columns else []
+    if not runner_hashes:
+        runner_hashes = _unique_nonempty(group["run_config_hash"]) if "run_config_hash" in group.columns else []
     job_hashes = _unique_nonempty(group["job_config_hash"]) if "job_config_hash" in group.columns else []
-    run_consistent = len(run_hashes) <= 1
-    run_hash = run_hashes[0] if run_consistent and run_hashes else ("multiple" if run_hashes else "")
+    experiment_consistent = len(experiment_hashes) <= 1
+    workflow_consistent = len(workflow_ids) <= 1
+    experiment_hash = experiment_hashes[0] if experiment_consistent and experiment_hashes else ("multiple" if experiment_hashes else "")
+    runner_hash = runner_hashes[0] if len(runner_hashes) == 1 else ("multiple" if runner_hashes else "")
     return pd.Series(
         {
-            "run_config_hash": run_hash,
-            "config_hash": run_hash,
-            "n_run_config_hashes": int(len(run_hashes)),
-            "run_config_hash_consistent": bool(run_consistent),
-            "run_config_hashes": ",".join(run_hashes) if len(run_hashes) <= 10 else "",
+            "config_hash": experiment_hash,
+            "experiment_config_hash": experiment_hash,
+            "n_experiment_config_hashes": int(len(experiment_hashes)),
+            "experiment_config_hash_consistent": bool(experiment_consistent),
+            "experiment_config_hashes": ",".join(experiment_hashes) if len(experiment_hashes) <= 10 else "",
+            "workflow_run_id": workflow_ids[0] if workflow_consistent and workflow_ids else ("multiple" if workflow_ids else ""),
+            "n_workflow_run_ids": int(len(workflow_ids)),
+            "workflow_run_id_consistent": bool(workflow_consistent),
+            "workflow_run_ids": ",".join(workflow_ids) if len(workflow_ids) <= 10 else "",
+            "runner_invocation_hash": runner_hash,
+            "run_config_hash": runner_hash,
+            "n_runner_invocation_hashes": int(len(runner_hashes)),
+            "runner_invocation_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
+            # Deprecated aliases retained for old downstream readers.
+            "n_run_config_hashes": int(len(runner_hashes)),
+            "run_config_hash_consistent": bool(len(runner_hashes) <= 1),
+            "run_config_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
             "job_config_hash": job_hashes[0] if job_hashes else "",
             "n_job_config_hashes": int(len(job_hashes)),
             "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",

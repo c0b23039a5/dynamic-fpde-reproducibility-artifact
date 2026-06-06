@@ -18,7 +18,7 @@ from experiments.common import config_hashes_for_job, load_mode_config, parser_w
 
 def main() -> int:
     args = parser_with_config("Run synthetic Bayesian-FPDE calibration.").parse_args()
-    cfg = load_mode_config(args.config, args.mode)
+    cfg = load_mode_config(args.config, args.mode, runner_name="experiments.run_synthetic_calibration")
     logger = setup_logging(cfg.get("logs_dir", "logs"), "synthetic_calibration")
     results_dir = Path(cfg.get("results_dir", "results"))
     figures_dir = Path(cfg.get("figures_dir", "figures"))

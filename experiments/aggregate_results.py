@@ -85,24 +85,42 @@ def main() -> int:
             ]
         )
     mode = ""
-    run_hashes: list[str] = []
+    experiment_hashes: list[str] = []
+    workflow_ids: list[str] = []
+    runner_hashes: list[str] = []
     job_hashes: list[str] = []
     if not df.empty:
         if "mode" in df.columns:
             mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
-        run_hashes = _unique_nonempty(df, "run_config_hash") or _unique_nonempty(df, "config_hash")
+        experiment_hashes = _unique_nonempty(df, "experiment_config_hash") or _unique_nonempty(df, "config_hash")
+        workflow_ids = _unique_nonempty(df, "workflow_run_id")
+        runner_hashes = _unique_nonempty(df, "runner_invocation_hash") or _unique_nonempty(df, "run_config_hash")
         job_hashes = _unique_nonempty(df, "job_config_hash")
-    run_hash_consistent = len(run_hashes) <= 1
-    if not run_hash_consistent:
-        _write_hash_warning(logs_dir, f"aggregate input contains {len(run_hashes)} run_config_hash values; marking run_config_hash as multiple")
-    run_hash_value = run_hashes[0] if run_hash_consistent and run_hashes else ("multiple" if run_hashes else "")
+    experiment_hash_consistent = len(experiment_hashes) <= 1
+    workflow_consistent = len(workflow_ids) <= 1
+    if not experiment_hash_consistent:
+        _write_hash_warning(logs_dir, f"aggregate input contains {len(experiment_hashes)} experiment_config_hash values; marking experiment_config_hash as multiple")
+    experiment_hash_value = experiment_hashes[0] if experiment_hash_consistent and experiment_hashes else ("multiple" if experiment_hashes else "")
+    runner_hash_value = runner_hashes[0] if len(runner_hashes) == 1 else ("multiple" if runner_hashes else "")
     common = {
         "mode": mode,
-        "config_hash": run_hash_value,
-        "run_config_hash": run_hash_value,
-        "n_run_config_hashes": len(run_hashes),
-        "run_config_hash_consistent": bool(run_hash_consistent),
-        "run_config_hashes": ",".join(run_hashes) if len(run_hashes) <= 10 else "",
+        "config_hash": experiment_hash_value,
+        "experiment_config_hash": experiment_hash_value,
+        "n_experiment_config_hashes": len(experiment_hashes),
+        "experiment_config_hash_consistent": bool(experiment_hash_consistent),
+        "experiment_config_hashes": ",".join(experiment_hashes) if len(experiment_hashes) <= 10 else "",
+        "workflow_run_id": workflow_ids[0] if workflow_consistent and workflow_ids else ("multiple" if workflow_ids else ""),
+        "n_workflow_run_ids": len(workflow_ids),
+        "workflow_run_id_consistent": bool(workflow_consistent),
+        "workflow_run_ids": ",".join(workflow_ids) if len(workflow_ids) <= 10 else "",
+        "runner_invocation_hash": runner_hash_value,
+        "run_config_hash": runner_hash_value,
+        "n_runner_invocation_hashes": len(runner_hashes),
+        "runner_invocation_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
+        # Deprecated aliases retained for old downstream readers.
+        "n_run_config_hashes": len(runner_hashes),
+        "run_config_hash_consistent": bool(len(runner_hashes) <= 1),
+        "run_config_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
         "n_job_config_hashes": len(job_hashes),
         "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",
         "timestamp": now_iso(),

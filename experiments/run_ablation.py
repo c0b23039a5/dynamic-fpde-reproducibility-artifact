@@ -15,7 +15,7 @@ from experiments.common import config_hashes_for_job, load_mode_config, parser_w
 
 def main() -> int:
     args = parser_with_config("Run Bayesian-FPDE ablations.").parse_args()
-    cfg = load_mode_config(args.config, args.mode)
+    cfg = load_mode_config(args.config, args.mode, runner_name="experiments.run_ablation")
     results_dir = Path(cfg.get("results_dir", "results"))
     figures_dir = Path(cfg.get("figures_dir", "figures"))
     ensure_dirs(results_dir, figures_dir)

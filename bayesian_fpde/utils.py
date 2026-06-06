@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,8 +25,42 @@ def load_yaml(path: str | Path) -> Dict[str, Any]:
     return data
 
 
-def mode_config(config: Mapping[str, Any], mode: str) -> Dict[str, Any]:
-    run_hash = config_hash({"mode": mode, "config": config})
+HASH_METADATA_KEYS = {
+    "config_hash",
+    "experiment_config_hash",
+    "job_config_hash",
+    "run_config_hash",
+    "runner_invocation_hash",
+    "workflow_run_id",
+}
+
+
+def _hash_config(config: Mapping[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in config.items() if k not in HASH_METADATA_KEYS}
+
+
+def mode_config(config: Mapping[str, Any], mode: str, *, runner_name: str = "") -> Dict[str, Any]:
+    hash_config = _hash_config(config)
+    explicit_experiment_hash = str(
+        config.get("experiment_config_hash")
+        or os.environ.get("BAYESIAN_FPDE_EXPERIMENT_CONFIG_HASH", "")
+        # Backward compatibility for configs produced before experiment_config_hash existed.
+        or config.get("run_config_hash")
+        or os.environ.get("BAYESIAN_FPDE_RUN_CONFIG_HASH", "")
+    ).strip()
+    experiment_hash = explicit_experiment_hash or config_hash({"mode": mode, "runner_name": runner_name, "config": hash_config})
+    workflow_run_id = str(config.get("workflow_run_id") or os.environ.get("BAYESIAN_FPDE_WORKFLOW_RUN_ID", "") or os.environ.get("GITHUB_RUN_ID", "")).strip()
+    runner_hash = str(config.get("runner_invocation_hash") or os.environ.get("BAYESIAN_FPDE_RUNNER_INVOCATION_HASH", "")).strip()
+    if not runner_hash:
+        runner_hash = config_hash(
+            {
+                "mode": mode,
+                "runner_name": runner_name,
+                "experiment_config_hash": experiment_hash,
+                "workflow_run_id": workflow_run_id,
+                "config": hash_config,
+            }
+        )
     merged = dict(config)
     modes = merged.pop("modes", {}) or {}
     selected = modes.get(mode, {}) or {}
@@ -33,12 +68,17 @@ def mode_config(config: Mapping[str, Any], mode: str) -> Dict[str, Any]:
         raise ValueError(f"mode config must be a mapping: {mode}")
     merged.update(selected)
     merged["mode"] = mode
-    merged["run_config_hash"] = run_hash
+    merged["experiment_config_hash"] = experiment_hash
+    merged["workflow_run_id"] = workflow_run_id
+    merged["runner_invocation_hash"] = runner_hash
+    # Backward compatibility: run_config_hash now identifies the runner
+    # invocation, not the paper-level experiment.
+    merged["run_config_hash"] = runner_hash
     # This is only a mode-level placeholder. Experiment runners should replace
     # it with a dataset/seed/fold-specific job_config_hash for result rows.
     merged["job_config_hash"] = config_hash({k: v for k, v in merged.items() if k != "job_config_hash"})
-    # Backward compatibility: config_hash means run-level config hash.
-    merged["config_hash"] = run_hash
+    # Backward compatibility: config_hash means paper-level experiment hash.
+    merged["config_hash"] = experiment_hash
     return merged
 
 
@@ -77,6 +117,9 @@ def base_metadata(**extra: Any) -> Dict[str, Any]:
         "split_id": "",
         "mode": "",
         "config_hash": "",
+        "experiment_config_hash": "",
+        "workflow_run_id": "",
+        "runner_invocation_hash": "",
         "run_config_hash": "",
         "job_config_hash": "",
         "timestamp": now_iso(),
@@ -101,6 +144,9 @@ def normalize_result_columns(df: pd.DataFrame) -> pd.DataFrame:
         "split_id",
         "mode",
         "config_hash",
+        "experiment_config_hash",
+        "workflow_run_id",
+        "runner_invocation_hash",
         "run_config_hash",
         "job_config_hash",
         "timestamp",

@@ -15,6 +15,9 @@ REQUIRED_METADATA = {
     "seed",
     "mode",
     "config_hash",
+    "experiment_config_hash",
+    "workflow_run_id",
+    "runner_invocation_hash",
     "run_config_hash",
     "job_config_hash",
     "timestamp",
@@ -68,13 +71,15 @@ def test_all_smoke_commands_and_outputs():
     assert (ok_calls["number_of_model_calls"] == ok_calls["total_model_calls"]).all()
     assert (ok_calls["total_model_calls"] == ok_calls["explanation_model_calls"] + ok_calls["evaluation_model_calls"]).all()
     assert ok_calls["evaluation_model_calls"].gt(0).all()
-    assert openml["run_config_hash"].nunique() == 1
-    assert (openml["config_hash"] == openml["run_config_hash"]).all()
+    assert openml["experiment_config_hash"].nunique() == 1
+    assert openml["config_hash"].nunique() == 1
+    assert (openml["config_hash"] == openml["experiment_config_hash"]).all()
+    assert openml["runner_invocation_hash"].nunique() >= 1
     assert (ROOT / "results" / "openml_local_explanations.parquet").exists() or (ROOT / "results" / "openml_local_explanations.parquet.csv").exists()
-    seed_summary = _csv("results/openml_seed_summary.csv", {"dataset_name", "task_id", "seed", "method", "n_rows", "n_explanation_rows", "n_unique_explanation_units", "mean_explanation_units_per_dataset_seed", "mean_deletion_auc", "n_run_config_hashes", "run_config_hash_consistent", "n_job_config_hashes", "mean_runtime_seconds_all_rows", "mean_runtime_seconds_ok_only"})
-    _csv("results/openml_global_summary.csv", {"dataset_name", "task_id", "method", "n_rows", "n_explanation_rows", "n_unique_explanation_units", "mean_deletion_auc", "n_run_config_hashes", "run_config_hash_consistent"})
+    seed_summary = _csv("results/openml_seed_summary.csv", {"dataset_name", "task_id", "seed", "method", "n_rows", "n_explanation_rows", "n_unique_explanation_units", "mean_explanation_units_per_dataset_seed", "mean_deletion_auc", "n_experiment_config_hashes", "experiment_config_hash_consistent", "n_runner_invocation_hashes", "n_job_config_hashes", "mean_runtime_seconds_all_rows", "mean_runtime_seconds_ok_only"})
+    _csv("results/openml_global_summary.csv", {"dataset_name", "task_id", "method", "n_rows", "n_explanation_rows", "n_unique_explanation_units", "mean_deletion_auc", "n_experiment_config_hashes", "experiment_config_hash_consistent"})
     method_summary = _csv("results/openml_method_summary.csv", {"method", "n_rows", "n_datasets", "n_explanation_rows", "n_unique_explanation_units", "mean_deletion_auc", "mean_runtime_seconds_all_rows", "mean_runtime_seconds_ok_only"})
-    assert seed_summary["run_config_hash_consistent"].all()
+    assert seed_summary["experiment_config_hash_consistent"].all()
     skipped = openml[openml["method"].isin(["shap", "lime", "aime"]) & (openml["status"] == "skipped")]
     assert not skipped.empty
     assert skipped["error_message"].astype(str).str.len().gt(0).all()
@@ -122,6 +127,69 @@ def test_all_smoke_commands_and_outputs():
     assert (ROOT / "figures" / "ablation_lambda.png").exists()
 
 
+def test_openml_raw_metrics_have_single_experiment_hash_and_job_hashes_vary(tmp_path: Path):
+    results = tmp_path / "results"
+    figures = tmp_path / "figures"
+    logs = tmp_path / "logs"
+    config = tmp_path / "openml_local_multi_seed.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                f"results_dir: {results.as_posix()}",
+                f"figures_dir: {figures.as_posix()}",
+                f"logs_dir: {logs.as_posix()}",
+                "local_smoke: true",
+                "seeds: [0, 1]",
+                "n_explain: 2",
+                "posterior_samples: 12",
+                "bootstrap_samples: 4",
+                "top_k: 3",
+                "tau: 0.0",
+                "lambda_hyb: 0.5",
+                "model: random_forest",
+                "methods:",
+                "  - hyb_fpde",
+                "  - bayesian_hyb_fpde",
+                "  - bayesshap",
+                "  - bayeslime",
+                "  - bayesian_aime",
+                "modes:",
+                "  smoke: {}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _run("experiments.run_openml_benchmark", "--config", str(config), "--mode", "smoke")
+    metrics = pd.read_csv(results / "openml_metrics.csv")
+    assert metrics["experiment_config_hash"].nunique() == 1
+    assert metrics["config_hash"].nunique() == 1
+    assert (metrics["config_hash"] == metrics["experiment_config_hash"]).all()
+    assert metrics["runner_invocation_hash"].nunique() == 1
+    assert (metrics["run_config_hash"] == metrics["runner_invocation_hash"]).all()
+    assert metrics["job_config_hash"].nunique() >= 1
+    job_units = metrics[["dataset_name", "task_id", "seed", "fold"]].drop_duplicates()
+    if len(job_units) > 1:
+        assert metrics["job_config_hash"].nunique() > 1
+
+    bayes_skipped = metrics[metrics["method"].isin(["bayesshap", "bayeslime", "bayesian_aime"])]
+    assert set(bayes_skipped["status"]) == {"skipped"}
+    assert set(bayes_skipped["error_message"]) == {
+        "BayesSHAP adapter is not implemented in this artifact",
+        "BayesLIME adapter is not implemented in this artifact",
+        "Bayesian-AIME adapter is not implemented in this artifact",
+    }
+    assert bayes_skipped[["explanation_model_calls", "evaluation_model_calls", "total_model_calls", "number_of_model_calls"]].eq(0).all().all()
+    assert bayes_skipped[["deletion_auc", "insertion_auc", "faithfulness_correlation", "combined_score"]].isna().all().all()
+
+    _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
+    summary = pd.read_csv(results / "openml_method_summary.csv")
+    assert set(summary["n_experiment_config_hashes"]) == {1}
+    assert summary["experiment_config_hash_consistent"].all()
+    assert set(summary["experiment_config_hash"]) != {"multiple"}
+    assert set(summary["config_hash"]) != {"multiple"}
+
+
 def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
     results = tmp_path / "results"
     figures = tmp_path / "figures"
@@ -139,8 +207,11 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
                         "fold": "fold0",
                         "split_id": "fold0",
                         "mode": "test",
-                        "config_hash": "abc123",
-                        "run_config_hash": "runabc",
+                        "config_hash": "experimentabc",
+                        "experiment_config_hash": "experimentabc",
+                        "workflow_run_id": "workflow1",
+                        "runner_invocation_hash": f"runner{seed}",
+                        "run_config_hash": f"runner{seed}",
                         "job_config_hash": f"job{seed}",
                         "timestamp": "2026-01-01T00:00:00+00:00",
                         "git_commit": "deadbee",
@@ -177,24 +248,27 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
     assert "explained_index" not in global_summary.columns
     assert "true_label" not in global_summary.columns
     assert {"n_explanation_rows", "n_unique_explanation_units", "mean_explanation_units_per_dataset_seed", "mean_runtime_seconds_all_rows", "mean_runtime_seconds_ok_only"}.issubset(global_summary.columns)
+    assert set(method_summary["n_experiment_config_hashes"]) == {1}
+    assert method_summary["experiment_config_hash_consistent"].all()
+    assert set(method_summary["n_runner_invocation_hashes"]) == {2}
     assert int(method_summary["n_unique_explanation_units"].sum()) == 8
     for name in ["statistical_tests.csv", "effect_sizes.csv", "bootstrap_confidence_intervals.csv"]:
         df = pd.read_csv(results / name)
         assert not df.empty
         assert "mode" in df.columns
-        assert {"n_run_config_hashes", "run_config_hash_consistent", "run_config_hashes", "n_job_config_hashes"}.issubset(df.columns)
-        assert df[["mode", "config_hash", "run_config_hash", "timestamp", "git_commit", "status"]].notna().any().all()
+        assert {"n_experiment_config_hashes", "experiment_config_hash_consistent", "experiment_config_hashes", "n_runner_invocation_hashes", "n_job_config_hashes"}.issubset(df.columns)
+        assert df[["mode", "config_hash", "experiment_config_hash", "timestamp", "git_commit", "status"]].notna().any().all()
     ci = pd.read_csv(results / "bootstrap_confidence_intervals.csv")
     assert set(ci["unit_level"]) == {"dataset_seed"}
     assert {"n_units", "n_instance_rows"}.issubset(ci.columns)
 
 
-def test_aggregate_marks_inconsistent_run_hashes(tmp_path: Path):
+def test_aggregate_marks_inconsistent_experiment_hashes(tmp_path: Path):
     results = tmp_path / "results"
     figures = tmp_path / "figures"
     results.mkdir()
     rows = []
-    for run_hash, seed in [("run_a", 0), ("run_b", 1)]:
+    for experiment_hash, seed in [("experiment_a", 0), ("experiment_b", 1)]:
         rows.append(
             {
                 "method": "hyb_fpde",
@@ -204,8 +278,11 @@ def test_aggregate_marks_inconsistent_run_hashes(tmp_path: Path):
                 "fold": "fold0",
                 "split_id": "fold0",
                 "mode": "test",
-                "config_hash": run_hash,
-                "run_config_hash": run_hash,
+                "config_hash": experiment_hash,
+                "experiment_config_hash": experiment_hash,
+                "workflow_run_id": "workflow1",
+                "runner_invocation_hash": f"runner{seed}",
+                "run_config_hash": f"runner{seed}",
                 "job_config_hash": f"job{seed}",
                 "timestamp": "2026-01-01T00:00:00+00:00",
                 "git_commit": "deadbee",
@@ -221,7 +298,8 @@ def test_aggregate_marks_inconsistent_run_hashes(tmp_path: Path):
     pd.DataFrame(rows).to_csv(results / "openml_metrics.csv", index=False)
     _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
     summary = pd.read_csv(results / "openml_method_summary.csv")
-    assert set(summary["n_run_config_hashes"]) == {2}
-    assert not summary["run_config_hash_consistent"].all()
-    assert set(summary["run_config_hash"]) == {"multiple"}
+    assert set(summary["n_experiment_config_hashes"]) == {2}
+    assert not summary["experiment_config_hash_consistent"].all()
+    assert set(summary["experiment_config_hash"]) == {"multiple"}
+    assert set(summary["config_hash"]) == {"multiple"}
     assert (tmp_path / "logs" / "aggregate_results.log").exists()

@@ -294,22 +294,41 @@ Result rows separate model-call accounting:
 
 Configuration hashes are also split:
 
-- `run_config_hash`: hash of the selected experiment configuration and mode;
-  intended to be constant for a run.
+- `experiment_config_hash`: paper-level experiment identity. It is computed
+  from the selected experiment configuration and mode, or injected by the
+  manual OpenML workflow. It must be constant across all task_id x seed matrix
+  jobs that belong to one paper-level OpenML run.
+- `workflow_run_id`: GitHub Actions run ID when available. It should be
+  constant across all matrix jobs in one workflow run.
+- `runner_invocation_hash`: hash of the actual per-runner config. In the
+  OpenML matrix workflow this may vary across task_id x seed jobs because each
+  job receives a narrowed generated config.
 - `job_config_hash`: hash of the dataset/seed/fold/job-specific configuration;
-  may vary across matrix jobs.
-- `config_hash`: deprecated backward-compatible alias for `run_config_hash`.
+  it is expected to vary across task IDs, datasets, seeds, folds, splits, and
+  method/evaluation settings.
+- `run_config_hash`: deprecated backward-compatible alias for
+  `runner_invocation_hash`.
+- `config_hash`: deprecated backward-compatible alias for
+  `experiment_config_hash`, which is the preferred paper-level identity.
 
 Aggregate outputs expose hash consistency instead of hiding it:
 
-- `n_run_config_hashes`: number of distinct run hashes in the aggregated input.
-- `run_config_hash_consistent`: true when there is at most one distinct run
-  hash.
-- `run_config_hashes`: comma-separated hashes when there are 10 or fewer.
-- `n_job_config_hashes` and `job_config_hashes`: analogous job-hash audit
-  fields. If multiple run hashes are found, aggregate outputs mark
-  `run_config_hash`/`config_hash` as `multiple` and write a warning to
-  `logs/aggregate_results.log`.
+- `n_experiment_config_hashes`: number of distinct paper-level experiment
+  hashes in the aggregated input.
+- `experiment_config_hash_consistent`: true when there is at most one distinct
+  paper-level experiment hash.
+- `experiment_config_hashes`: comma-separated hashes when there are 10 or
+  fewer.
+- `n_workflow_run_ids`, `n_runner_invocation_hashes`, and
+  `n_job_config_hashes`: audit counts for workflow, runner, and job levels.
+  Multiple `runner_invocation_hash` or `job_config_hash` values are expected in
+  OpenML matrix aggregates and do not make the aggregate invalid. If multiple
+  `experiment_config_hash` values are found, aggregate outputs mark
+  `experiment_config_hash`/`config_hash` as `multiple` and write a warning to
+  `logs/aggregate_results.log`. A fresh OpenML medium aggregate with
+  `n_experiment_config_hashes > 1` is not a valid single paper-level aggregate;
+  it indicates mixed inputs and must be rerun or separated before paper
+  reporting.
 
 SHAP explanations use a training-background sample rather than the explained
 instance alone. The runner samples up to `max_background=100` rows from
@@ -336,6 +355,9 @@ because the AIME adapter is not implemented in this artifact; that case is
 distinguished from a missing dependency in `error_message`. BayesSHAP,
 BayesLIME, and Bayesian-AIME are not aliases for ordinary SHAP, LIME, or AIME:
 they are recorded as skipped unless true Bayesian adapters are implemented.
+Smoke tests explicitly check that these Bayesian baseline rows have exact
+skipped messages, zero model-call counts, and no attribution/faithfulness
+metrics.
 
 Paper-level bootstrap confidence intervals are computed over dataset-seed units
 by default: rows are first averaged within `dataset_name`, `task_id`, `seed`,

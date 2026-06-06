@@ -261,6 +261,45 @@ four figures listed above while preserving SHA and hash metadata as strings.
 Failed synthetic conditions are recorded with `status="error"` and an
 `error_message` in the summary instead of being silently dropped.
 
+After a completed full synthetic run has produced
+`results/synthetic_calibration_summary.csv`, create paper-ready analysis tables
+and figures with:
+
+```bash
+python -m experiments.analyze_synthetic_full \
+  --input results/synthetic_calibration_summary.csv \
+  --results-dir results \
+  --figures-dir figures
+```
+
+This command reads only the completed summary CSV and does not fabricate or
+impute missing experiment outcomes. It writes:
+
+- `results/synthetic_full_method_summary.csv`
+- `results/synthetic_full_by_n_samples.csv`
+- `results/synthetic_full_by_n_features.csv`
+- `results/synthetic_full_by_class_separation.csv`
+- `results/synthetic_full_by_effective_warning.csv`
+- `results/synthetic_full_low_effective_warning_summary.csv`
+- `figures/synthetic_full_coverage_by_method.png`
+- `figures/synthetic_full_coverage_by_n_samples.png`
+- `figures/synthetic_full_ci_width_by_n_samples.png`
+- `figures/synthetic_full_sign_ece_by_n_samples.png`
+- `figures/synthetic_full_topk_precision_by_n_samples.png`
+- `figures/synthetic_full_effective_n_explain_by_n_samples.png`
+- `figures/synthetic_full_warning_rate_heatmap.png`
+
+For synthetic calibration, `coverage_95` is the empirical coverage of nominal
+95% posterior credible intervals against the known true attribution values.
+Values below 0.95 indicate undercoverage; the analysis tables therefore include
+`coverage_gap_from_95`, `abs_coverage_gap_from_95`, and undercoverage counts and
+rates. The `low_effective_n_explain_warning` flag indicates that too few
+correctly classified test examples were available for the requested explanation
+count in a condition. Rows and figures stratified by that warning should be
+consulted before interpreting calibration, especially for small or difficult
+synthetic settings. Pilot results remain runtime and output-shape checks only;
+they should not be used as final paper results.
+
 Bayesian-FPDE reports posterior mean, posterior standard deviation, 95% credible
 intervals, posterior sign probabilities, `P(|phi_j| > tau)`, mean/std ranks,
 and top-k rank probabilities. Optional SHAP, LIME, and AIME baselines are

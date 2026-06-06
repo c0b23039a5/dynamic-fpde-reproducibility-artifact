@@ -10,6 +10,19 @@ from bayesian_fpde.stats import bootstrap_confidence_intervals, method_tests
 from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso
 
 
+def _unique_nonempty(df: pd.DataFrame, column: str) -> list[str]:
+    if column not in df.columns:
+        return []
+    return sorted({str(v) for v in df[column] if pd.notna(v) and str(v) != ""})
+
+
+def _write_hash_warning(logs_dir: Path, message: str) -> None:
+    ensure_dirs(logs_dir)
+    with open(logs_dir / "aggregate_results.log", "a", encoding="utf-8") as fh:
+        fh.write(f"{now_iso()} WARNING {message}\n")
+    print(f"WARNING: {message}")
+
+
 def _read_csvs(results_dir: Path) -> pd.DataFrame:
     frames = []
     for name in ["openml_metrics.csv", "faithfulness_metrics.csv", "synthetic_calibration_summary.csv", "stability_metrics.csv", "training_size_uncertainty.csv", "ablation_metrics.csv"]:
@@ -26,6 +39,7 @@ def main() -> int:
     args = parser.parse_args()
     results_dir = Path(args.results_dir)
     figures_dir = Path(args.figures_dir)
+    logs_dir = results_dir.parent / "logs"
     ensure_dirs(results_dir, figures_dir)
     df = _read_csvs(results_dir)
     openml_path = results_dir / "openml_metrics.csv"
@@ -71,23 +85,24 @@ def main() -> int:
             ]
         )
     mode = ""
-    config_hash = ""
-    run_config_hash = ""
+    run_hashes: list[str] = []
     job_hashes: list[str] = []
     if not df.empty:
         if "mode" in df.columns:
             mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
-        if "run_config_hash" in df.columns:
-            unique_run_hashes = sorted({str(v) for v in df["run_config_hash"] if pd.notna(v) and str(v) != ""})
-            run_config_hash = unique_run_hashes[0] if len(unique_run_hashes) == 1 else ""
-        if "config_hash" in df.columns:
-            config_hash = next((str(v) for v in df["config_hash"] if pd.notna(v) and str(v) != ""), "")
-        if "job_config_hash" in df.columns:
-            job_hashes = sorted({str(v) for v in df["job_config_hash"] if pd.notna(v) and str(v) != ""})
+        run_hashes = _unique_nonempty(df, "run_config_hash") or _unique_nonempty(df, "config_hash")
+        job_hashes = _unique_nonempty(df, "job_config_hash")
+    run_hash_consistent = len(run_hashes) <= 1
+    if not run_hash_consistent:
+        _write_hash_warning(logs_dir, f"aggregate input contains {len(run_hashes)} run_config_hash values; marking run_config_hash as multiple")
+    run_hash_value = run_hashes[0] if run_hash_consistent and run_hashes else ("multiple" if run_hashes else "")
     common = {
         "mode": mode,
-        "config_hash": run_config_hash or config_hash,
-        "run_config_hash": run_config_hash or config_hash,
+        "config_hash": run_hash_value,
+        "run_config_hash": run_hash_value,
+        "n_run_config_hashes": len(run_hashes),
+        "run_config_hash_consistent": bool(run_hash_consistent),
+        "run_config_hashes": ",".join(run_hashes) if len(run_hashes) <= 10 else "",
         "n_job_config_hashes": len(job_hashes),
         "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",
         "timestamp": now_iso(),

@@ -34,7 +34,9 @@ def mode_config(config: Mapping[str, Any], mode: str) -> Dict[str, Any]:
     merged.update(selected)
     merged["mode"] = mode
     merged["run_config_hash"] = run_hash
-    merged["job_config_hash"] = config_hash(merged)
+    # This is only a mode-level placeholder. Experiment runners should replace
+    # it with a dataset/seed/fold-specific job_config_hash for result rows.
+    merged["job_config_hash"] = config_hash({k: v for k, v in merged.items() if k != "job_config_hash"})
     # Backward compatibility: config_hash means run-level config hash.
     merged["config_hash"] = run_hash
     return merged

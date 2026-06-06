@@ -10,7 +10,7 @@ from bayesian_fpde.datasets import generate_synthetic_gaussian, fit_black_box
 from bayesian_fpde.metrics import deletion_insertion_metrics
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, write_csv
-from experiments.common import load_mode_config, parser_with_config
+from experiments.common import config_hashes_for_job, load_mode_config, parser_with_config
 
 
 def main() -> int:
@@ -29,12 +29,14 @@ def main() -> int:
             result = explain_bayesian_fpde(model, x, data.X, data.y, config=BayesianFPDEConfig(n_posterior_samples=int(posterior_samples)), anchor=baseline, feature_names=data.feature_names, seed=int(seed))
             attr = result.summary["posterior_mean"].to_numpy(dtype=float)
             metrics = deletion_insertion_metrics(model, x, attr, baseline, target_label=result.positive_label)
-            rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_ablation", "split_id": f"posterior_samples_{posterior_samples}", "mode": str(cfg.get("mode", "")), "config_hash": str(cfg.get("config_hash", "")), "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))), "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))), "status": "ok", "error_message": ""}), "ablation": "posterior_samples", "posterior_samples": int(posterior_samples), "lambda_hyb": 0.5, "model": model_name, "mean_ci_width": float(np.mean(result.summary["ci_upper_95"] - result.summary["ci_lower_95"])), **metrics})
+            hashes = config_hashes_for_job(cfg, dataset_name=str(data.metadata.get("dataset_name", "")), seed=int(seed), fold="synthetic_ablation", split_id=f"posterior_samples_{posterior_samples}", methods=["bayesian_hyb_fpde"], posterior_samples=int(posterior_samples), lambda_hyb=0.5)
+            rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_ablation", "split_id": f"posterior_samples_{posterior_samples}", "mode": str(cfg.get("mode", "")), **hashes, "status": "ok", "error_message": ""}), "ablation": "posterior_samples", "posterior_samples": int(posterior_samples), "lambda_hyb": 0.5, "model": model_name, "mean_ci_width": float(np.mean(result.summary["ci_upper_95"] - result.summary["ci_lower_95"])), **metrics})
         for lambda_hyb in cfg.get("lambda_grid", [0.0, 0.5, 1.0]):
             result = explain_bayesian_fpde(model, x, data.X, data.y, config=BayesianFPDEConfig(n_posterior_samples=int(cfg.get("posterior_samples", 100)), lambda_hyb=float(lambda_hyb)), anchor=baseline, feature_names=data.feature_names, seed=int(seed))
             attr = result.summary["posterior_mean"].to_numpy(dtype=float)
             metrics = deletion_insertion_metrics(model, x, attr, baseline, target_label=result.positive_label)
-            rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_ablation", "split_id": f"lambda_hyb_{lambda_hyb}", "mode": str(cfg.get("mode", "")), "config_hash": str(cfg.get("config_hash", "")), "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))), "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))), "status": "ok", "error_message": ""}), "ablation": "lambda_hyb", "posterior_samples": int(cfg.get("posterior_samples", 100)), "lambda_hyb": float(lambda_hyb), "model": model_name, "mean_ci_width": float(np.mean(result.summary["ci_upper_95"] - result.summary["ci_lower_95"])), **metrics})
+            hashes = config_hashes_for_job(cfg, dataset_name=str(data.metadata.get("dataset_name", "")), seed=int(seed), fold="synthetic_ablation", split_id=f"lambda_hyb_{lambda_hyb}", methods=["bayesian_hyb_fpde"], posterior_samples=int(cfg.get("posterior_samples", 100)), lambda_hyb=float(lambda_hyb))
+            rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_ablation", "split_id": f"lambda_hyb_{lambda_hyb}", "mode": str(cfg.get("mode", "")), **hashes, "status": "ok", "error_message": ""}), "ablation": "lambda_hyb", "posterior_samples": int(cfg.get("posterior_samples", 100)), "lambda_hyb": float(lambda_hyb), "model": model_name, "mean_ci_width": float(np.mean(result.summary["ci_upper_95"] - result.summary["ci_lower_95"])), **metrics})
     df = pd.DataFrame(rows)
     write_csv(df, results_dir / "ablation_metrics.csv")
     save_line_plot(df[df["ablation"] == "posterior_samples"], x="posterior_samples", y="mean_ci_width", path=figures_dir / "ablation_posterior_samples.png", title="Posterior sample ablation")

@@ -262,12 +262,25 @@ only; identifiers such as explained indices and labels are not averaged.
 Explanation counts are explicit:
 
 - `n_explanation_rows`: total explanation rows contributing to the summary.
-- `n_unique_explained_indices`: unique `explained_index` values inside the
-  group.
-- `mean_explain_instances_per_seed`, `min_explain_instances_per_seed`, and
-  `max_explain_instances_per_seed`: per-seed explanation counts.
-- `n_explain_instances` is retained only as a backward-compatible alias for
-  `n_unique_explained_indices`.
+- `n_unique_explanation_units`: unique explanation units defined by
+  `dataset_name`, `task_id`, `seed`, `fold`, and `explained_index`.
+- `mean_explanation_units_per_dataset_seed`,
+  `min_explanation_units_per_dataset_seed`, and
+  `max_explanation_units_per_dataset_seed`: explanation-unit counts per
+  dataset/seed/fold unit. For example, 10 datasets x 3 seeds x 50 explained
+  samples should produce 1500 unique explanation units per method.
+- `n_unique_explained_indices`, `n_explain_instances`,
+  `mean_explain_instances_per_seed`, `min_explain_instances_per_seed`, and
+  `max_explain_instances_per_seed` are retained only as deprecated
+  backward-compatible aliases for the explanation-unit fields.
+
+Runtime summaries distinguish all attempted rows from comparable successful
+rows:
+
+- `mean_runtime_seconds_all_rows`: mean over `ok`, `skipped`, and `error` rows.
+- `mean_runtime_seconds_ok_only`: mean over `ok` rows only. Method comparison
+  summaries and runtime plots use this ok-only value; methods with only skipped
+  rows have `NaN` for ok-only runtime.
 
 Result rows separate model-call accounting:
 
@@ -286,6 +299,17 @@ Configuration hashes are also split:
 - `job_config_hash`: hash of the dataset/seed/fold/job-specific configuration;
   may vary across matrix jobs.
 - `config_hash`: deprecated backward-compatible alias for `run_config_hash`.
+
+Aggregate outputs expose hash consistency instead of hiding it:
+
+- `n_run_config_hashes`: number of distinct run hashes in the aggregated input.
+- `run_config_hash_consistent`: true when there is at most one distinct run
+  hash.
+- `run_config_hashes`: comma-separated hashes when there are 10 or fewer.
+- `n_job_config_hashes` and `job_config_hashes`: analogous job-hash audit
+  fields. If multiple run hashes are found, aggregate outputs mark
+  `run_config_hash`/`config_hash` as `multiple` and write a warning to
+  `logs/aggregate_results.log`.
 
 SHAP explanations use a training-background sample rather than the explained
 instance alone. The runner samples up to `max_background=100` rows from

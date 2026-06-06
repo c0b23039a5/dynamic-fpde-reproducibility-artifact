@@ -11,7 +11,7 @@ from bayesian_fpde.datasets import encode_labels, fit_black_box, load_case_study
 from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde
 from bayesian_fpde.plotting import save_ci_bar, save_rank_probability
 from bayesian_fpde.utils import base_metadata, ensure_dirs, write_csv
-from experiments.common import load_mode_config, parser_with_config
+from experiments.common import config_hashes_for_job, load_mode_config, parser_with_config
 
 
 def main() -> int:
@@ -39,7 +39,8 @@ def main() -> int:
             out[f"{method}_status"] = base.status
             out[f"{method}_error_message"] = base.error_message
             out[f"{method}_dependency_available"] = base.dependency_available
-        meta = base_metadata(dataset_name=dataset_name, method="bayesian_hyb_fpde", model=model_name, seed=int(cfg.get("seed", 0)), fold="case_study_split", split_id="case_study_split", mode=str(cfg.get("mode", "")), config_hash=str(cfg.get("config_hash", "")), run_config_hash=str(cfg.get("run_config_hash", cfg.get("config_hash", ""))), job_config_hash=str(cfg.get("job_config_hash", cfg.get("config_hash", ""))), status="ok", error_message="")
+        hashes = config_hashes_for_job(cfg, dataset_name=dataset_name, seed=int(cfg.get("seed", 0)), fold="case_study_split", split_id="case_study_split", methods=["bayesian_hyb_fpde"], posterior_samples=int(cfg.get("posterior_samples", 200)), top_k=int(cfg.get("top_k", 5)), lambda_hyb=float(cfg.get("lambda_hyb", 0.5)))
+        meta = base_metadata(dataset_name=dataset_name, method="bayesian_hyb_fpde", model=model_name, seed=int(cfg.get("seed", 0)), fold="case_study_split", split_id="case_study_split", mode=str(cfg.get("mode", "")), **hashes, status="ok", error_message="")
         for key, value in meta.items():
             out[key] = value
         safe_name = str(dataset_name).replace(" ", "_").replace("/", "_")

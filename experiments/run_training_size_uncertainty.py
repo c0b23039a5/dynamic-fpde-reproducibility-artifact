@@ -11,7 +11,7 @@ from bayesian_fpde.fpde import true_fpde_attribution
 from bayesian_fpde.metrics import calibration_metrics
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, write_csv
-from experiments.common import load_mode_config, parser_with_config
+from experiments.common import config_hashes_for_job, load_mode_config, parser_with_config
 
 
 def main() -> int:
@@ -48,7 +48,8 @@ def main() -> int:
             )
             truth = true_fpde_attribution(x, data.true_prototypes, data.labels, positive_label=c_plus, negative_label=c_minus, mode="hyb", lambda_hyb=float(cfg.get("lambda_hyb", 0.5)))
             metrics = calibration_metrics(result.summary, truth, top_k=int(cfg.get("top_k", 5)), sign_bins=int(cfg.get("sign_calibration_bins", 10)))
-            rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_training_size", "split_id": f"training_size_{size}", "mode": str(cfg.get("mode", "")), "config_hash": str(cfg.get("config_hash", "")), "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))), "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))), "status": "ok", "error_message": ""}), "model": model_name, "training_size": int(size), "sign_confidence": float(np.mean(np.maximum(result.summary["p_positive"], result.summary["p_negative"]))), "rank_stability": float(np.nanmean(result.summary["rank_probability_top_k"])), **metrics})
+            hashes = config_hashes_for_job(cfg, dataset_name=str(data.metadata.get("dataset_name", "")), seed=int(seed), fold="synthetic_training_size", split_id=f"training_size_{size}", methods=["bayesian_hyb_fpde"], posterior_samples=int(cfg.get("posterior_samples", 100)), top_k=int(cfg.get("top_k", 5)), lambda_hyb=float(cfg.get("lambda_hyb", 0.5)))
+            rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_training_size", "split_id": f"training_size_{size}", "mode": str(cfg.get("mode", "")), **hashes, "status": "ok", "error_message": ""}), "model": model_name, "training_size": int(size), "sign_confidence": float(np.mean(np.maximum(result.summary["p_positive"], result.summary["p_negative"]))), "rank_stability": float(np.nanmean(result.summary["rank_probability_top_k"])), **metrics})
     df = pd.DataFrame(rows)
     write_csv(df, results_dir / "training_size_uncertainty.csv")
     save_line_plot(df, x="training_size", y="mean_ci_width", group="method", path=figures_dir / "ci_width_vs_training_size.png", title="CI width vs training size")

@@ -56,7 +56,8 @@ def main() -> int:
     runtime_df = pd.concat(all_runtime, ignore_index=True) if all_runtime else pd.DataFrame()
     write_standard_outputs(results_dir, figures_dir, local_df, metrics_df, runtime_df)
     save_metric_boxplot(metrics_df, metric="faithfulness_correlation", path=figures_dir / "openml_faithfulness_boxplot.png", title="OpenML faithfulness")
-    save_metric_boxplot(runtime_df, metric="runtime_seconds", path=figures_dir / "openml_runtime_boxplot.png", title="OpenML runtime")
+    runtime_ok_df = runtime_df[runtime_df["status"] == "ok"] if not runtime_df.empty and "status" in runtime_df.columns else runtime_df
+    save_metric_boxplot(runtime_ok_df, metric="runtime_seconds", path=figures_dir / "openml_runtime_boxplot.png", title="OpenML runtime")
     rank_table = local_df.groupby(["method", "feature"], as_index=False)["rank_mean"].mean() if not local_df.empty else pd.DataFrame()
     rank_table.to_csv(figures_dir / "openml_average_rank_table.csv", index=False, lineterminator="\n")
     write_json({"config": cfg, "n_metric_rows": int(len(metrics_df))}, results_dir / "openml_metadata.json")

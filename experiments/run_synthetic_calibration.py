@@ -13,7 +13,7 @@ from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde, true_
 from bayesian_fpde.metrics import calibration_metrics, sign_reliability_bins
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, setup_logging, write_csv, write_json
-from experiments.common import parser_with_config, load_mode_config
+from experiments.common import config_hashes_for_job, load_mode_config, parser_with_config
 
 
 def main() -> int:
@@ -85,6 +85,20 @@ def main() -> int:
                                             mode = "diff"
                                         elif "cos" in method:
                                             mode = "cos"
+                                        job_hashes = config_hashes_for_job(
+                                            cfg,
+                                            dataset_name=str(data.metadata.get("dataset_name", "")),
+                                            task_id=str(data.metadata.get("task_id", "")),
+                                            seed=int(seed),
+                                            fold="synthetic_random_split",
+                                            split_id="synthetic_random_split",
+                                            methods=[method],
+                                            n_explain=n_explain,
+                                            posterior_samples=posterior_samples,
+                                            tau=tau,
+                                            top_k=top_k,
+                                            lambda_hyb=lambda_hyb,
+                                        )
                                         per_instance_metrics = []
                                         for order, idx in enumerate(eligible.tolist()):
                                             x = X_test[idx]
@@ -131,9 +145,7 @@ def main() -> int:
                                                     "fold": "synthetic_random_split",
                                                     "split_id": "synthetic_random_split",
                                                     "mode": str(cfg.get("mode", "")),
-                                                    "config_hash": str(cfg.get("config_hash", "")),
-                                                    "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))),
-                                                    "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))),
+                                                    **job_hashes,
                                                     "status": "ok",
                                                     "error_message": "",
                                                 }
@@ -178,9 +190,7 @@ def main() -> int:
                                                             "fold": "synthetic_random_split",
                                                             "split_id": "synthetic_random_split",
                                                             "mode": str(cfg.get("mode", "")),
-                                                            "config_hash": str(cfg.get("config_hash", "")),
-                                                            "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))),
-                                                            "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))),
+                                                            **job_hashes,
                                                             "status": "ok",
                                                             "error_message": "",
                                                         }

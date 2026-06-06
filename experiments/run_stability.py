@@ -10,7 +10,7 @@ from bayesian_fpde.datasets import generate_synthetic_gaussian, fit_black_box
 from bayesian_fpde.metrics import stability_metrics
 from bayesian_fpde.plotting import save_metric_boxplot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, setup_logging, write_csv
-from experiments.common import load_mode_config, parser_with_config
+from experiments.common import config_hashes_for_job, load_mode_config, parser_with_config
 
 
 def main() -> int:
@@ -51,7 +51,8 @@ def main() -> int:
             )
             samples.append(result.summary["posterior_mean"].to_numpy(dtype=float))
         metrics = stability_metrics(np.asarray(samples), top_k=top_k)
-        rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_bootstrap", "split_id": "synthetic_bootstrap", "mode": str(cfg.get("mode", "")), "config_hash": str(cfg.get("config_hash", "")), "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))), "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))), "status": "ok", "error_message": ""}), "posterior_rank_std": float(np.nanmean([metrics.get("rank_entropy", np.nan)])), **metrics})
+        hashes = config_hashes_for_job(cfg, dataset_name=str(data.metadata.get("dataset_name", "")), seed=int(seed), fold="synthetic_bootstrap", split_id="synthetic_bootstrap", methods=["bayesian_hyb_fpde"], posterior_samples=int(cfg.get("posterior_samples", 50)), top_k=top_k)
+        rows.append({**base_metadata(**{**data.metadata, "method": "bayesian_hyb_fpde", "seed": int(seed), "fold": "synthetic_bootstrap", "split_id": "synthetic_bootstrap", "mode": str(cfg.get("mode", "")), **hashes, "status": "ok", "error_message": ""}), "posterior_rank_std": float(np.nanmean([metrics.get("rank_entropy", np.nan)])), **metrics})
         logger.info("stability completed seed=%s", seed)
     df = pd.DataFrame(rows)
     write_csv(df, results_dir / "stability_metrics.csv")

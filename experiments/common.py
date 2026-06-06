@@ -25,7 +25,7 @@ from bayesian_fpde.datasets import (
 )
 from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde
 from bayesian_fpde.metrics import deletion_insertion_metrics, stability_metrics, top_k_jaccard
-from bayesian_fpde.utils import base_metadata, ensure_dirs, load_yaml, mode_config, setup_logging, write_csv, write_json, write_parquet_or_csv
+from bayesian_fpde.utils import base_metadata, config_hash as stable_config_hash, ensure_dirs, load_yaml, mode_config, setup_logging, write_csv, write_json, write_parquet_or_csv
 
 
 DETERMINISTIC_METHODS = {
@@ -42,6 +42,8 @@ BAYESIAN_METHODS = {
 }
 
 OPTIONAL_METHODS = {"shap", "lime", "aime", "bayesshap", "bayeslime", "bayesian_aime"}
+EXPLANATION_UNIT_COLS = ["dataset_name", "task_id", "seed", "fold", "explained_index"]
+DATASET_SEED_UNIT_COLS = ["dataset_name", "task_id", "seed", "fold"]
 
 
 def parser_with_config(description: str) -> argparse.ArgumentParser:
@@ -53,6 +55,88 @@ def parser_with_config(description: str) -> argparse.ArgumentParser:
 
 def load_mode_config(path: str, mode: str) -> Dict[str, Any]:
     return mode_config(load_yaml(path), mode)
+
+
+def job_config_hash_for(
+    *,
+    run_config_hash: str,
+    mode: str,
+    dataset_name: str,
+    task_id: int | str = "",
+    seed: int | str = "",
+    fold: int | str = "",
+    split_id: int | str = "",
+    methods: Sequence[str] = (),
+    n_explain: int = 0,
+    posterior_samples: int = 0,
+    bootstrap_samples: int = 0,
+    tau: float = 0.0,
+    top_k: int = 0,
+    lambda_hyb: float = 0.0,
+    max_background: int = 0,
+) -> str:
+    """Hash the job-specific knobs that distinguish dataset/seed/fold work."""
+
+    return stable_config_hash(
+        {
+            "run_config_hash": run_config_hash,
+            "mode": mode,
+            "dataset_name": dataset_name,
+            "task_id": task_id,
+            "seed": seed,
+            "fold": fold,
+            "split_id": split_id,
+            "methods": list(methods),
+            "n_explain": int(n_explain),
+            "posterior_samples": int(posterior_samples),
+            "bootstrap_samples": int(bootstrap_samples),
+            "tau": float(tau),
+            "top_k": int(top_k),
+            "lambda_hyb": float(lambda_hyb),
+            "max_background": int(max_background),
+        }
+    )
+
+
+def config_hashes_for_job(
+    cfg: Dict[str, Any],
+    *,
+    dataset_name: str,
+    task_id: int | str = "",
+    seed: int | str = "",
+    fold: int | str = "",
+    split_id: int | str = "",
+    methods: Sequence[str] = (),
+    n_explain: int = 0,
+    posterior_samples: int = 0,
+    bootstrap_samples: int = 0,
+    tau: float = 0.0,
+    top_k: int = 0,
+    lambda_hyb: float = 0.0,
+    max_background: int = 0,
+) -> Dict[str, str]:
+    run_hash = str(cfg.get("run_config_hash", cfg.get("config_hash", "")))
+    return {
+        "config_hash": run_hash,
+        "run_config_hash": run_hash,
+        "job_config_hash": job_config_hash_for(
+            run_config_hash=run_hash,
+            mode=str(cfg.get("mode", "")),
+            dataset_name=dataset_name,
+            task_id=task_id,
+            seed=seed,
+            fold=fold,
+            split_id=split_id,
+            methods=methods,
+            n_explain=n_explain,
+            posterior_samples=posterior_samples,
+            bootstrap_samples=bootstrap_samples,
+            tau=tau,
+            top_k=top_k,
+            lambda_hyb=lambda_hyb,
+            max_background=max_background,
+        ),
+    }
 
 
 def explain_indices(y: np.ndarray, pred: np.ndarray, n_explain: int, *, correct_only: bool = True, seed: int = 0) -> np.ndarray:
@@ -101,6 +185,24 @@ def evaluate_methods_for_dataset(
     metric_rows: List[Dict[str, Any]] = []
     local_rows: List[Dict[str, Any]] = []
     runtime_rows: List[Dict[str, Any]] = []
+    effective_run_config_hash = str(run_config_hash or config_hash)
+    effective_job_config_hash = job_config_hash_for(
+        run_config_hash=effective_run_config_hash,
+        mode=mode,
+        dataset_name=dataset_name,
+        task_id=task_id,
+        seed=seed,
+        fold=fold,
+        split_id=fold,
+        methods=methods,
+        n_explain=n_explain,
+        posterior_samples=posterior_samples,
+        bootstrap_samples=bootstrap_samples,
+        tau=tau,
+        top_k=top_k,
+        lambda_hyb=lambda_hyb,
+        max_background=max_background,
+    )
     metadata = base_metadata(
         dataset_name=dataset_name,
         task_id=task_id,
@@ -108,9 +210,9 @@ def evaluate_methods_for_dataset(
         fold=fold,
         split_id=fold,
         mode=mode,
-        config_hash=config_hash,
-        run_config_hash=run_config_hash or config_hash,
-        job_config_hash=job_config_hash or config_hash,
+        config_hash=effective_run_config_hash,
+        run_config_hash=effective_run_config_hash,
+        job_config_hash=effective_job_config_hash,
     )
 
     for order, idx in enumerate(indices.tolist()):
@@ -333,6 +435,36 @@ def _status_counts(group: pd.DataFrame) -> pd.Series:
     )
 
 
+def _unique_nonempty(values: pd.Series) -> List[str]:
+    return sorted({str(v) for v in values if pd.notna(v) and str(v) != ""})
+
+
+def _unique_explanation_units(group: pd.DataFrame) -> int:
+    unit_cols = [col for col in EXPLANATION_UNIT_COLS if col in group.columns]
+    if unit_cols:
+        return int(group[unit_cols].drop_duplicates().shape[0])
+    return int(len(group))
+
+
+def _hash_consistency(group: pd.DataFrame) -> pd.Series:
+    run_hashes = _unique_nonempty(group["run_config_hash"]) if "run_config_hash" in group.columns else []
+    job_hashes = _unique_nonempty(group["job_config_hash"]) if "job_config_hash" in group.columns else []
+    run_consistent = len(run_hashes) <= 1
+    run_hash = run_hashes[0] if run_consistent and run_hashes else ("multiple" if run_hashes else "")
+    return pd.Series(
+        {
+            "run_config_hash": run_hash,
+            "config_hash": run_hash,
+            "n_run_config_hashes": int(len(run_hashes)),
+            "run_config_hash_consistent": bool(run_consistent),
+            "run_config_hashes": ",".join(run_hashes) if len(run_hashes) <= 10 else "",
+            "job_config_hash": job_hashes[0] if job_hashes else "",
+            "n_job_config_hashes": int(len(job_hashes)),
+            "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",
+        }
+    )
+
+
 def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.DataFrame:
     if metrics.empty:
         return pd.DataFrame()
@@ -341,7 +473,6 @@ def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.Data
         "deletion_drop_auc",
         "insertion_auc",
         "faithfulness_correlation",
-        "runtime_seconds",
         "number_of_model_calls",
         "explanation_model_calls",
         "evaluation_model_calls",
@@ -359,28 +490,44 @@ def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.Data
         n_explanation_rows=("method", "size"),
         n_datasets=("dataset_name", "nunique"),
         n_seeds=("seed", "nunique"),
-        n_unique_explained_indices=("explained_index", "nunique"),
         **{f"mean_{col}": (col, "mean") for col in available_mean_cols},
     ).reset_index()
-    summary["n_explain_instances"] = summary["n_unique_explained_indices"]
-    per_seed_cols = list(dict.fromkeys(list(group_cols) + ["seed"]))
-    per_seed = metrics.groupby(per_seed_cols, dropna=False)["explained_index"].nunique().reset_index(name="per_seed_explain_instances")
-    per_seed_grouped = per_seed.groupby(list(group_cols), dropna=False)["per_seed_explain_instances"].agg(
-        mean_explain_instances_per_seed="mean",
-        min_explain_instances_per_seed="min",
-        max_explain_instances_per_seed="max",
+    unique_units = grouped.apply(_unique_explanation_units).reset_index(name="n_unique_explanation_units")
+    summary = summary.merge(unique_units, on=list(group_cols), how="left")
+    summary["n_unique_explained_indices"] = summary["n_unique_explanation_units"]
+    summary["n_explain_instances"] = summary["n_unique_explanation_units"]
+
+    unit_parent_cols = list(dict.fromkeys(list(group_cols) + [col for col in DATASET_SEED_UNIT_COLS if col in metrics.columns]))
+    per_dataset_seed = metrics.groupby(unit_parent_cols, dropna=False).apply(_unique_explanation_units).reset_index(name="explanation_units_per_dataset_seed")
+    per_dataset_seed_grouped = per_dataset_seed.groupby(list(group_cols), dropna=False)["explanation_units_per_dataset_seed"].agg(
+        mean_explanation_units_per_dataset_seed="mean",
+        min_explanation_units_per_dataset_seed="min",
+        max_explanation_units_per_dataset_seed="max",
     ).reset_index()
-    summary = summary.merge(per_seed_grouped, on=list(group_cols), how="left")
+    summary = summary.merge(per_dataset_seed_grouped, on=list(group_cols), how="left")
+    summary["mean_explain_instances_per_seed"] = summary["mean_explanation_units_per_dataset_seed"]
+    summary["min_explain_instances_per_seed"] = summary["min_explanation_units_per_dataset_seed"]
+    summary["max_explain_instances_per_seed"] = summary["max_explanation_units_per_dataset_seed"]
+
+    if "runtime_seconds" in metrics.columns:
+        runtime_all = grouped["runtime_seconds"].mean().reset_index(name="mean_runtime_seconds_all_rows")
+        summary = summary.merge(runtime_all, on=list(group_cols), how="left")
+        if "status" in metrics.columns:
+            ok_runtime = metrics[metrics["status"] == "ok"].groupby(list(group_cols), dropna=False)["runtime_seconds"].mean().reset_index(name="mean_runtime_seconds_ok_only")
+        else:
+            ok_runtime = runtime_all.rename(columns={"mean_runtime_seconds_all_rows": "mean_runtime_seconds_ok_only"})
+        summary = summary.merge(ok_runtime, on=list(group_cols), how="left")
+        summary["mean_runtime_seconds"] = summary["mean_runtime_seconds_ok_only"]
+
     status = grouped.apply(_status_counts).reset_index()
     summary = summary.merge(status, on=list(group_cols), how="left")
     summary["metric_direction"] = "higher_is_better"
-    for meta_col in ["mode", "config_hash", "run_config_hash", "job_config_hash", "git_commit"]:
+    for meta_col in ["mode", "git_commit"]:
         if meta_col in metrics.columns and meta_col not in summary.columns:
             meta = grouped[meta_col].agg(lambda s: next((str(v) for v in s if pd.notna(v) and str(v) != ""), "")).reset_index(name=meta_col)
             summary = summary.merge(meta, on=list(group_cols), how="left")
-    if "job_config_hash" in metrics.columns:
-        job_hash_counts = grouped["job_config_hash"].agg(lambda s: len({str(v) for v in s if pd.notna(v) and str(v) != ""})).reset_index(name="n_job_config_hashes")
-        summary = summary.merge(job_hash_counts, on=list(group_cols), how="left")
+    hash_meta = grouped.apply(_hash_consistency).reset_index()
+    summary = summary.merge(hash_meta, on=list(group_cols), how="left")
     return summary
 
 

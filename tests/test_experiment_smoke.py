@@ -15,6 +15,8 @@ REQUIRED_METADATA = {
     "seed",
     "mode",
     "config_hash",
+    "run_config_hash",
+    "job_config_hash",
     "timestamp",
     "git_commit",
     "status",
@@ -60,15 +62,21 @@ def test_all_smoke_commands_and_outputs():
     _run("experiments.run_openml_benchmark", "--config", "configs/openml_cc18.yaml", "--mode", "smoke")
     openml = _csv(
         "results/openml_metrics.csv",
-        REQUIRED_METADATA | {"task_id", "fold", "split_id", "faithfulness_correlation", "faithfulness_delta_mean", "dependency_available", "n_model_calls", "combined_score", "metric_direction"},
+        REQUIRED_METADATA | {"task_id", "fold", "split_id", "faithfulness_correlation", "faithfulness_delta_mean", "dependency_available", "explanation_model_calls", "evaluation_model_calls", "total_model_calls", "number_of_model_calls", "combined_score", "metric_direction", "background_size", "max_background"},
     )
+    ok_calls = openml[openml["status"] == "ok"]
+    assert (ok_calls["number_of_model_calls"] == ok_calls["total_model_calls"]).all()
+    assert openml["run_config_hash"].nunique() == 1
     assert (ROOT / "results" / "openml_local_explanations.parquet").exists() or (ROOT / "results" / "openml_local_explanations.parquet.csv").exists()
-    _csv("results/openml_seed_summary.csv", {"dataset_name", "task_id", "seed", "method", "n_rows", "mean_deletion_auc"})
-    _csv("results/openml_global_summary.csv", {"dataset_name", "task_id", "method", "n_rows", "mean_deletion_auc"})
-    _csv("results/openml_method_summary.csv", {"method", "n_rows", "n_datasets", "mean_deletion_auc"})
+    _csv("results/openml_seed_summary.csv", {"dataset_name", "task_id", "seed", "method", "n_rows", "n_explanation_rows", "n_unique_explained_indices", "mean_explain_instances_per_seed", "mean_deletion_auc"})
+    _csv("results/openml_global_summary.csv", {"dataset_name", "task_id", "method", "n_rows", "n_explanation_rows", "n_unique_explained_indices", "mean_deletion_auc"})
+    _csv("results/openml_method_summary.csv", {"method", "n_rows", "n_datasets", "n_explanation_rows", "mean_deletion_auc"})
     skipped = openml[openml["method"].isin(["shap", "lime", "aime"]) & (openml["status"] == "skipped")]
     assert not skipped.empty
     assert skipped["error_message"].astype(str).str.len().gt(0).all()
+    bayes_skipped = openml[openml["method"].isin(["bayesshap", "bayeslime", "bayesian_aime"])]
+    assert set(bayes_skipped["status"]) == {"skipped"}
+    assert bayes_skipped["error_message"].str.contains("adapter is not implemented").all()
 
     _run("experiments.run_stability", "--config", "configs/openml_cc18.yaml", "--mode", "smoke")
     _csv("results/stability_metrics.csv", REQUIRED_METADATA | {"mean_spearman_between_runs", "top_k_jaccard_between_runs"})
@@ -112,6 +120,8 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
                         "split_id": "fold0",
                         "mode": "test",
                         "config_hash": "abc123",
+                        "run_config_hash": "runabc",
+                        "job_config_hash": f"job{seed}",
                         "timestamp": "2026-01-01T00:00:00+00:00",
                         "git_commit": "deadbee",
                         "status": "ok",
@@ -127,6 +137,9 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
                         "faithfulness_correlation": score,
                         "runtime_seconds": 0.1,
                         "number_of_model_calls": 3,
+                        "explanation_model_calls": 1,
+                        "evaluation_model_calls": 2,
+                        "total_model_calls": 3,
                         "top_k_jaccard": score,
                         "test_accuracy": 0.9,
                         "combined_score": score,
@@ -143,8 +156,12 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
     assert method_summary["method"].nunique() == 2
     assert "explained_index" not in global_summary.columns
     assert "true_label" not in global_summary.columns
+    assert {"n_explanation_rows", "n_unique_explained_indices", "mean_explain_instances_per_seed"}.issubset(global_summary.columns)
     for name in ["statistical_tests.csv", "effect_sizes.csv", "bootstrap_confidence_intervals.csv"]:
         df = pd.read_csv(results / name)
         assert not df.empty
         assert "mode" in df.columns
-        assert df[["mode", "config_hash", "timestamp", "git_commit", "status"]].notna().any().all()
+        assert df[["mode", "config_hash", "run_config_hash", "timestamp", "git_commit", "status"]].notna().any().all()
+    ci = pd.read_csv(results / "bootstrap_confidence_intervals.csv")
+    assert set(ci["unit_level"]) == {"dataset_seed"}
+    assert {"n_units", "n_instance_rows"}.issubset(ci.columns)

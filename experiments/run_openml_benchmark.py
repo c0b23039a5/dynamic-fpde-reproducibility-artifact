@@ -44,6 +44,9 @@ def main() -> int:
                 lambda_hyb=float(cfg.get("lambda_hyb", 0.5)),
                 mode=str(cfg.get("mode", "")),
                 config_hash=str(cfg.get("config_hash", "")),
+                run_config_hash=str(cfg.get("run_config_hash", cfg.get("config_hash", ""))),
+                job_config_hash=str(cfg.get("job_config_hash", cfg.get("config_hash", ""))),
+                max_background=int(cfg.get("max_background", 100)),
             )
             all_local.append(local)
             all_metrics.append(metrics)

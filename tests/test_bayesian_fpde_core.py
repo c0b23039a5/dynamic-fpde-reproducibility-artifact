@@ -100,6 +100,20 @@ def test_optional_baseline_skip_record_for_unknown_dependency_path():
     assert result.dependency_available in {True, False}
 
 
+def test_bayesshap_and_bayeslime_are_not_mapped_to_standard_adapters():
+    data, model = _model_data()
+    for method, expected in [
+        ("bayesshap", "BayesSHAP adapter is not implemented in this artifact"),
+        ("bayeslime", "BayesLIME adapter is not implemented in this artifact"),
+        ("bayesian_aime", "Bayesian-AIME adapter is not implemented in this artifact"),
+    ]:
+        result = optional_baseline(method, model, data.X[0], data.X, data.y, data.feature_names, int(model.classes_[0]), seed=0)
+        assert result.status == "skipped"
+        assert result.attribution is None
+        assert result.error_message == expected
+        assert result.n_model_calls == 0
+
+
 def test_shap_skipped_when_unavailable(monkeypatch):
     data, model = _model_data()
     original_import = builtins.__import__
@@ -137,3 +151,8 @@ def test_shap_uses_training_background_when_available(monkeypatch):
     assert attr.shape == data.X[0].shape
     assert captured["background"].shape[0] == 10
     assert not np.array_equal(captured["background"], data.X[0].reshape(1, -1))
+
+    baseline = optional_baseline("shap", model, data.X[0], data.X, data.y, data.feature_names, int(model.classes_[0]), seed=2, max_background=10)
+    assert baseline.status == "ok"
+    assert baseline.background_size == 10
+    assert baseline.max_background == 10

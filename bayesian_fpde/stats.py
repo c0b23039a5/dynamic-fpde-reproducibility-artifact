@@ -70,13 +70,34 @@ def method_tests(df: pd.DataFrame, *, metric: str = "combined_score") -> tuple[p
     return pd.DataFrame(rows), pd.DataFrame(effects)
 
 
-def bootstrap_confidence_intervals(df: pd.DataFrame, *, metric: str = "combined_score", n_bootstrap: int = 500, seed: int = 0) -> pd.DataFrame:
+def bootstrap_confidence_intervals(
+    df: pd.DataFrame,
+    *,
+    metric: str = "combined_score",
+    n_bootstrap: int = 500,
+    seed: int = 0,
+    unit_level: str = "dataset_seed",
+) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     rows = []
     if df.empty or metric not in df.columns:
         return pd.DataFrame()
-    for method, sub in df.groupby("method"):
-        vals = sub[metric].dropna().to_numpy(dtype=float)
+    if unit_level == "dataset_seed":
+        unit_cols = [col for col in ["dataset_name", "task_id", "seed", "fold", "method"] if col in df.columns]
+        if "method" not in unit_cols:
+            unit_cols.append("method")
+        unit_df = df.groupby(unit_cols, dropna=False).agg(
+            unit_metric=(metric, "mean"),
+            n_instance_rows=(metric, "size"),
+        ).reset_index()
+    elif unit_level == "instance":
+        unit_df = df.copy()
+        unit_df["unit_metric"] = pd.to_numeric(unit_df[metric], errors="coerce")
+        unit_df["n_instance_rows"] = 1
+    else:
+        raise ValueError("unit_level must be 'dataset_seed' or 'instance'")
+    for method, sub in unit_df.groupby("method"):
+        vals = sub["unit_metric"].dropna().to_numpy(dtype=float)
         if vals.size == 0:
             continue
         means = []
@@ -89,6 +110,9 @@ def bootstrap_confidence_intervals(df: pd.DataFrame, *, metric: str = "combined_
             {
                 "method": method,
                 "metric": metric,
+                "unit_level": unit_level,
+                "n_units": int(vals.size),
+                "n_instance_rows": int(sub["n_instance_rows"].sum()),
                 "mean": float(np.mean(vals)),
                 "mean_ci_lower_95": float(np.quantile(means, 0.025)),
                 "mean_ci_upper_95": float(np.quantile(means, 0.975)),

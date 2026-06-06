@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 
@@ -19,6 +19,20 @@ class BaselineResult:
     dependency_available: bool = False
     n_model_calls: int = 0
     background_size: int = 0
+    max_background: Optional[int] = None
+
+
+_DEPENDENCY_CACHE: Dict[str, bool] = {}
+_ADAPTER_SKIP_CACHE: Dict[str, str] = {}
+
+
+def dependency_available(module_name: str) -> bool:
+    if module_name not in _DEPENDENCY_CACHE:
+        try:
+            _DEPENDENCY_CACHE[module_name] = importlib.util.find_spec(module_name) is not None
+        except ValueError:
+            _DEPENDENCY_CACHE[module_name] = True
+    return _DEPENDENCY_CACHE[module_name]
 
 
 def shap_background_sample(
@@ -117,7 +131,15 @@ def optional_baseline(
         "bayeslime": "lime",
         "bayesian_aime": "aime_xai",
     }.get(method, method)
-    dependency_available = importlib.util.find_spec(dependency_name) is not None
+    dep_ok = dependency_available(dependency_name)
+    not_implemented = {
+        "bayesshap": "BayesSHAP adapter is not implemented in this artifact",
+        "bayeslime": "BayesLIME adapter is not implemented in this artifact",
+        "bayesian_aime": "Bayesian-AIME adapter is not implemented in this artifact",
+    }
+    if method in not_implemented:
+        message = _ADAPTER_SKIP_CACHE.setdefault(method, not_implemented[method])
+        return BaselineResult(None, "skipped", message, dep_ok, 0, 0, max_background)
     try:
         if method == "shap":
             attr = explain_shap(model, x, X_train, target_label, seed=seed, max_background=max_background)
@@ -135,8 +157,8 @@ def optional_baseline(
             raise ValueError(f"unknown baseline method: {method}")
         if attr.shape != x.shape:
             raise ValueError(f"attribution shape {attr.shape} does not match {x.shape}")
-        return BaselineResult(np.asarray(attr, dtype=float), "ok", "", dependency_available, n_model_calls, background_size)
+        return BaselineResult(np.asarray(attr, dtype=float), "ok", "", dep_ok, n_model_calls, background_size, max_background)
     except MethodUnavailable as exc:
-        return BaselineResult(None, "skipped", str(exc), dependency_available, 0)
+        return BaselineResult(None, "skipped", str(exc), dep_ok, 0, 0, max_background)
     except Exception as exc:
-        return BaselineResult(None, "error", f"{type(exc).__name__}: {exc}", dependency_available, 0)
+        return BaselineResult(None, "error", f"{type(exc).__name__}: {exc}", dep_ok, 0, 0, max_background)

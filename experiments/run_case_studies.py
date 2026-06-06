@@ -39,7 +39,7 @@ def main() -> int:
             out[f"{method}_status"] = base.status
             out[f"{method}_error_message"] = base.error_message
             out[f"{method}_dependency_available"] = base.dependency_available
-        meta = base_metadata(dataset_name=dataset_name, method="bayesian_hyb_fpde", model=model_name, seed=int(cfg.get("seed", 0)), fold="case_study_split", split_id="case_study_split", mode=str(cfg.get("mode", "")), config_hash=str(cfg.get("config_hash", "")), status="ok", error_message="")
+        meta = base_metadata(dataset_name=dataset_name, method="bayesian_hyb_fpde", model=model_name, seed=int(cfg.get("seed", 0)), fold="case_study_split", split_id="case_study_split", mode=str(cfg.get("mode", "")), config_hash=str(cfg.get("config_hash", "")), run_config_hash=str(cfg.get("run_config_hash", cfg.get("config_hash", ""))), job_config_hash=str(cfg.get("job_config_hash", cfg.get("config_hash", ""))), status="ok", error_message="")
         for key, value in meta.items():
             out[key] = value
         safe_name = str(dataset_name).replace(" ", "_").replace("/", "_")

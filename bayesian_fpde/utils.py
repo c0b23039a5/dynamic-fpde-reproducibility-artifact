@@ -25,6 +25,7 @@ def load_yaml(path: str | Path) -> Dict[str, Any]:
 
 
 def mode_config(config: Mapping[str, Any], mode: str) -> Dict[str, Any]:
+    run_hash = config_hash({"mode": mode, "config": config})
     merged = dict(config)
     modes = merged.pop("modes", {}) or {}
     selected = modes.get(mode, {}) or {}
@@ -32,7 +33,10 @@ def mode_config(config: Mapping[str, Any], mode: str) -> Dict[str, Any]:
         raise ValueError(f"mode config must be a mapping: {mode}")
     merged.update(selected)
     merged["mode"] = mode
-    merged["config_hash"] = config_hash(merged)
+    merged["run_config_hash"] = run_hash
+    merged["job_config_hash"] = config_hash(merged)
+    # Backward compatibility: config_hash means run-level config hash.
+    merged["config_hash"] = run_hash
     return merged
 
 
@@ -71,6 +75,8 @@ def base_metadata(**extra: Any) -> Dict[str, Any]:
         "split_id": "",
         "mode": "",
         "config_hash": "",
+        "run_config_hash": "",
+        "job_config_hash": "",
         "timestamp": now_iso(),
         "git_commit": git_commit(),
         "status": "ok",
@@ -93,6 +99,8 @@ def normalize_result_columns(df: pd.DataFrame) -> pd.DataFrame:
         "split_id",
         "mode",
         "config_hash",
+        "run_config_hash",
+        "job_config_hash",
         "timestamp",
         "git_commit",
         "status",

@@ -28,6 +28,9 @@ methods:
   - shap
   - lime
   - aime
+  - bayesshap
+  - bayeslime
+  - bayesian_aime
 faithfulness_methods:
   - hyb_fpde
   - bayesian_hyb_fpde
@@ -47,6 +50,9 @@ modes:
       - shap
       - lime
       - aime
+      - bayesshap
+      - bayeslime
+      - bayesian_aime
     faithfulness_methods:
       - hyb_fpde
       - bayesian_hyb_fpde

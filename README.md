@@ -259,12 +259,41 @@ OpenML benchmark summaries are split by aggregation level:
 
 Summary files report counts, status counts, and means of meaningful metrics
 only; identifiers such as explained indices and labels are not averaged.
+Explanation counts are explicit:
+
+- `n_explanation_rows`: total explanation rows contributing to the summary.
+- `n_unique_explained_indices`: unique `explained_index` values inside the
+  group.
+- `mean_explain_instances_per_seed`, `min_explain_instances_per_seed`, and
+  `max_explain_instances_per_seed`: per-seed explanation counts.
+- `n_explain_instances` is retained only as a backward-compatible alias for
+  `n_unique_explained_indices`.
+
+Result rows separate model-call accounting:
+
+- `explanation_model_calls`: approximate model calls needed to generate the
+  explanation.
+- `evaluation_model_calls`: model calls used for deletion/insertion,
+  comprehensiveness, sufficiency, and per-feature faithfulness evaluation.
+- `total_model_calls`: the sum of explanation and evaluation calls.
+- `number_of_model_calls`: deprecated backward-compatible alias for
+  `total_model_calls`.
+
+Configuration hashes are also split:
+
+- `run_config_hash`: hash of the selected experiment configuration and mode;
+  intended to be constant for a run.
+- `job_config_hash`: hash of the dataset/seed/fold/job-specific configuration;
+  may vary across matrix jobs.
+- `config_hash`: deprecated backward-compatible alias for `run_config_hash`.
 
 SHAP explanations use a training-background sample rather than the explained
 instance alone. The runner samples up to `max_background=100` rows from
 `X_train` with the configured seed and uses that background when constructing
 `shap.Explainer`. The recorded SHAP model-call count is an approximation based
-on the background size and one explained sample.
+on the background size and one explained sample. SHAP rows report
+`background_size` and `max_background`; LIME rows report the training rows used
+to initialize the explainer.
 
 `combined_score` is a convenience aggregate, not a primary theoretical metric:
 
@@ -280,7 +309,15 @@ earlier. Result rows record `metric_direction = "higher_is_better"`.
 Optional baselines are always attempted and recorded as `ok`, `skipped`, or
 `error`. AIME may be recorded as skipped even when the dependency is installed
 because the AIME adapter is not implemented in this artifact; that case is
-distinguished from a missing dependency in `error_message`.
+distinguished from a missing dependency in `error_message`. BayesSHAP,
+BayesLIME, and Bayesian-AIME are not aliases for ordinary SHAP, LIME, or AIME:
+they are recorded as skipped unless true Bayesian adapters are implemented.
+
+Paper-level bootstrap confidence intervals are computed over dataset-seed units
+by default: rows are first averaged within `dataset_name`, `task_id`, `seed`,
+`fold`, and `method`, then bootstrap resampling is applied to those unit-level
+values. Instance-level bootstrap is reserved for debugging because it can
+overstate precision when many explanations come from the same fitted model.
 
 OpenML-10/`medium` runs are preliminary engineering checks. They are not
 equivalent to the full OpenML-CC18 experiment and should not be reported as full

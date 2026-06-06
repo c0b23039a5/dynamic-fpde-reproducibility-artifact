@@ -132,6 +132,8 @@ def main() -> int:
                                                     "split_id": "synthetic_random_split",
                                                     "mode": str(cfg.get("mode", "")),
                                                     "config_hash": str(cfg.get("config_hash", "")),
+                                                    "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))),
+                                                    "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))),
                                                     "status": "ok",
                                                     "error_message": "",
                                                 }
@@ -177,6 +179,8 @@ def main() -> int:
                                                             "split_id": "synthetic_random_split",
                                                             "mode": str(cfg.get("mode", "")),
                                                             "config_hash": str(cfg.get("config_hash", "")),
+                                                            "run_config_hash": str(cfg.get("run_config_hash", cfg.get("config_hash", ""))),
+                                                            "job_config_hash": str(cfg.get("job_config_hash", cfg.get("config_hash", ""))),
                                                             "status": "ok",
                                                             "error_message": "",
                                                         }

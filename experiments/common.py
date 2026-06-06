@@ -86,6 +86,9 @@ def evaluate_methods_for_dataset(
     lambda_hyb: float = 0.5,
     mode: str = "",
     config_hash: str = "",
+    run_config_hash: str = "",
+    job_config_hash: str = "",
+    max_background: int = 100,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     prototypes, labels = class_prototypes(X_train, y_train)
     baseline = np.mean(X_train, axis=0)
@@ -106,6 +109,8 @@ def evaluate_methods_for_dataset(
         split_id=fold,
         mode=mode,
         config_hash=config_hash,
+        run_config_hash=run_config_hash or config_hash,
+        job_config_hash=job_config_hash or config_hash,
     )
 
     for order, idx in enumerate(indices.tolist()):
@@ -123,13 +128,16 @@ def evaluate_methods_for_dataset(
             target_label = pred_label
             method_key = method.lower()
             dependency_available = method_key not in OPTIONAL_METHODS
-            n_model_calls = 0
+            explanation_model_calls = 0
+            background_size = 0
+            row_max_background: Optional[int] = None
             if method_key in OPTIONAL_METHODS:
-                base_name = {"bayesshap": "shap", "bayeslime": "lime", "bayesian_aime": "aime"}.get(method_key, method_key)
-                result = optional_baseline(base_name, model, x, X_train, y_train, feature_names, target_label, seed=seed)
+                result = optional_baseline(method_key, model, x, X_train, y_train, feature_names, target_label, seed=seed, max_background=max_background)
                 status, error_message, attr = result.status, result.error_message, result.attribution
                 dependency_available = bool(result.dependency_available)
-                n_model_calls = int(result.n_model_calls)
+                explanation_model_calls = int(result.n_model_calls)
+                background_size = int(result.background_size)
+                row_max_background = result.max_background
             else:
                 try:
                     if method_key in DETERMINISTIC_METHODS:
@@ -137,6 +145,7 @@ def evaluate_methods_for_dataset(
                         if cfg.mode == "hyb":
                             cfg = FPDEConfig(mode="hyb", lambda_hyb=lambda_hyb)
                         attr, target_label, _ = explain_fpde(model, x, prototypes, labels, config=cfg, anchor=baseline)
+                        explanation_model_calls = 1
                     elif method_key in BAYESIAN_METHODS:
                         fpde_mode, default_lambda = BAYESIAN_METHODS[method_key]
                         cfg = BayesianFPDEConfig(
@@ -159,6 +168,7 @@ def evaluate_methods_for_dataset(
                         attr = result.summary["posterior_mean"].to_numpy(dtype=float)
                         target_label = result.positive_label
                         summary = result.summary
+                        explanation_model_calls = 1
                     elif method_key == "bootstrap_fpde":
                         samples = bootstrap_fpde_samples(
                             model,
@@ -172,6 +182,7 @@ def evaluate_methods_for_dataset(
                         )
                         summary = summarize_samples(samples, feature_names=feature_names, tau=tau, top_k=top_k)
                         attr = summary["posterior_mean"].to_numpy(dtype=float)
+                        explanation_model_calls = int(samples.shape[0])
                     else:
                         status = "skipped"
                         error_message = f"unknown or optional method not enabled: {method}"
@@ -194,20 +205,32 @@ def evaluate_methods_for_dataset(
                 "n_train": int(X_train.shape[0]),
                 "n_test": int(X_test.shape[0]),
                 "runtime_seconds": elapsed,
-                "n_model_calls": n_model_calls,
+                "explanation_model_calls": explanation_model_calls,
+                "evaluation_model_calls": 0,
+                "total_model_calls": explanation_model_calls,
+                "n_model_calls": explanation_model_calls,
+                "number_of_model_calls": explanation_model_calls,
+                "background_size": background_size,
+                "max_background": row_max_background,
                 **perf,
             }
             runtime_rows.append(dict(row_base))
             if status == "ok" and attr is not None:
                 metric = deletion_insertion_metrics(model, x, attr, baseline, target_label=target_label)
-                metric_calls = int(2 * len((0.0, 0.1, 0.2, 0.5, 1.0)) + 1 + x.size)
-                metric["number_of_model_calls"] = n_model_calls or metric_calls
-                metric["n_model_calls"] = n_model_calls or metric_calls
+                evaluation_model_calls = int(2 * len((0.0, 0.1, 0.2, 0.5, 1.0)) + 1 + x.size)
+                total_model_calls = int(explanation_model_calls + evaluation_model_calls)
+                metric["explanation_model_calls"] = explanation_model_calls
+                metric["evaluation_model_calls"] = evaluation_model_calls
+                metric["total_model_calls"] = total_model_calls
+                metric["number_of_model_calls"] = total_model_calls
+                metric["n_model_calls"] = total_model_calls
                 # Higher is better for both terms:
                 # deletion_drop_auc = p0 - deletion_auc, so larger probability drop is better;
                 # insertion_auc rewards recovering target probability early as features are inserted.
                 metric["combined_score"] = float((metric["deletion_drop_auc"] + metric["insertion_auc"]) / 2.0)
                 metric["metric_direction"] = "higher_is_better"
+                row_base = {**row_base, "evaluation_model_calls": evaluation_model_calls, "total_model_calls": total_model_calls, "n_model_calls": total_model_calls, "number_of_model_calls": total_model_calls}
+                runtime_rows[-1].update(row_base)
                 metric_rows.append({**row_base, **metric, "top_k_jaccard": np.nan})
                 if summary is not None:
                     for _, feature_row in summary.iterrows():
@@ -233,7 +256,7 @@ def evaluate_methods_for_dataset(
                             }
                         )
             else:
-                metric_rows.append({**row_base, "p0": np.nan, "deletion_auc": np.nan, "deletion_drop_auc": np.nan, "insertion_auc": np.nan, "comprehensiveness": np.nan, "sufficiency": np.nan, "faithfulness_correlation": np.nan, "faithfulness_delta_mean": np.nan, "faithfulness_delta_abs_mean": np.nan, "number_of_model_calls": n_model_calls, "combined_score": np.nan, "metric_direction": "higher_is_better", "top_k_jaccard": np.nan})
+                metric_rows.append({**row_base, "p0": np.nan, "deletion_auc": np.nan, "deletion_drop_auc": np.nan, "insertion_auc": np.nan, "comprehensiveness": np.nan, "sufficiency": np.nan, "faithfulness_correlation": np.nan, "faithfulness_delta_mean": np.nan, "faithfulness_delta_abs_mean": np.nan, "combined_score": np.nan, "metric_direction": "higher_is_better", "top_k_jaccard": np.nan})
     metrics = pd.DataFrame(metric_rows)
     if not metrics.empty:
         det = metrics[metrics["method"].isin(["hyb_fpde", "hyb_fpde_grid"])][["explained_index", "deletion_drop_auc"]]
@@ -320,26 +343,44 @@ def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.Data
         "faithfulness_correlation",
         "runtime_seconds",
         "number_of_model_calls",
+        "explanation_model_calls",
+        "evaluation_model_calls",
+        "total_model_calls",
         "top_k_jaccard",
         "test_accuracy",
         "combined_score",
+        "background_size",
+        "max_background",
     ]
     available_mean_cols = [col for col in mean_cols if col in metrics.columns]
     grouped = metrics.groupby(list(group_cols), dropna=False)
     summary = grouped.agg(
         n_rows=("method", "size"),
+        n_explanation_rows=("method", "size"),
         n_datasets=("dataset_name", "nunique"),
         n_seeds=("seed", "nunique"),
-        n_explain_instances=("explained_index", "nunique"),
+        n_unique_explained_indices=("explained_index", "nunique"),
         **{f"mean_{col}": (col, "mean") for col in available_mean_cols},
     ).reset_index()
+    summary["n_explain_instances"] = summary["n_unique_explained_indices"]
+    per_seed_cols = list(dict.fromkeys(list(group_cols) + ["seed"]))
+    per_seed = metrics.groupby(per_seed_cols, dropna=False)["explained_index"].nunique().reset_index(name="per_seed_explain_instances")
+    per_seed_grouped = per_seed.groupby(list(group_cols), dropna=False)["per_seed_explain_instances"].agg(
+        mean_explain_instances_per_seed="mean",
+        min_explain_instances_per_seed="min",
+        max_explain_instances_per_seed="max",
+    ).reset_index()
+    summary = summary.merge(per_seed_grouped, on=list(group_cols), how="left")
     status = grouped.apply(_status_counts).reset_index()
     summary = summary.merge(status, on=list(group_cols), how="left")
     summary["metric_direction"] = "higher_is_better"
-    for meta_col in ["mode", "config_hash", "git_commit"]:
+    for meta_col in ["mode", "config_hash", "run_config_hash", "job_config_hash", "git_commit"]:
         if meta_col in metrics.columns and meta_col not in summary.columns:
             meta = grouped[meta_col].agg(lambda s: next((str(v) for v in s if pd.notna(v) and str(v) != ""), "")).reset_index(name=meta_col)
             summary = summary.merge(meta, on=list(group_cols), how="left")
+    if "job_config_hash" in metrics.columns:
+        job_hash_counts = grouped["job_config_hash"].agg(lambda s: len({str(v) for v in s if pd.notna(v) and str(v) != ""})).reset_index(name="n_job_config_hashes")
+        summary = summary.merge(job_hash_counts, on=list(group_cols), how="left")
     return summary
 
 

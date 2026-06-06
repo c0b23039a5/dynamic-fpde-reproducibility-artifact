@@ -40,7 +40,7 @@ def main() -> int:
         metric = "combined_score"
     ok = df[df["status"] == "ok"] if not df.empty and "status" in df.columns else df
     tests, effects = method_tests(ok, metric=metric)
-    ci = bootstrap_confidence_intervals(ok, metric=metric, n_bootstrap=200)
+    ci = bootstrap_confidence_intervals(ok, metric=metric, n_bootstrap=200, unit_level="dataset_seed")
     if tests.empty:
         tests = pd.DataFrame(
             [
@@ -72,14 +72,24 @@ def main() -> int:
         )
     mode = ""
     config_hash = ""
+    run_config_hash = ""
+    job_hashes: list[str] = []
     if not df.empty:
         if "mode" in df.columns:
             mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
+        if "run_config_hash" in df.columns:
+            unique_run_hashes = sorted({str(v) for v in df["run_config_hash"] if pd.notna(v) and str(v) != ""})
+            run_config_hash = unique_run_hashes[0] if len(unique_run_hashes) == 1 else ""
         if "config_hash" in df.columns:
             config_hash = next((str(v) for v in df["config_hash"] if pd.notna(v) and str(v) != ""), "")
+        if "job_config_hash" in df.columns:
+            job_hashes = sorted({str(v) for v in df["job_config_hash"] if pd.notna(v) and str(v) != ""})
     common = {
         "mode": mode,
-        "config_hash": config_hash,
+        "config_hash": run_config_hash or config_hash,
+        "run_config_hash": run_config_hash or config_hash,
+        "n_job_config_hashes": len(job_hashes),
+        "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",
         "timestamp": now_iso(),
         "git_commit": git_commit(),
     }

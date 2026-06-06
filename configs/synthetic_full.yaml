@@ -1,0 +1,38 @@
+results_dir: results
+figures_dir: figures
+logs_dir: logs
+seeds: [0, 1, 2, 3, 4]
+posterior_samples: 500
+n_explain: 50
+top_k: 5
+tau: 0.0
+lambda_hyb: 0.5
+sign_calibration_bins: 10
+test_size: 0.3
+model: random_forest
+methods:
+  - bayesian_diff_fpde
+  - bayesian_cos_fpde
+  - bayesian_hyb_fpde
+grid:
+  n_samples: [50, 100, 500, 1000]
+  n_features: [10, 50, 100]
+  n_informative: [3, 5, 10]
+  n_classes: [2]
+  class_separation: [small, medium, large]
+  feature_correlation: [independent, correlated]
+  class_balance: [balanced, imbalanced]
+modes:
+  smoke:
+    seeds: [0]
+    posterior_samples: 30
+    n_explain: 3
+    grid:
+      n_samples: [60]
+      n_features: [8]
+      n_informative: [3]
+      n_classes: [2]
+      class_separation: [medium]
+      feature_correlation: [independent]
+      class_balance: [balanced]
+  full: {}

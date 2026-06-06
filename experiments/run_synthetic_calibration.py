@@ -209,6 +209,8 @@ def main() -> int:
     write_csv(bins, results_dir / "synthetic_sign_calibration_bins.csv")
     save_line_plot(summary, x="n_samples", y="coverage_95", group="method", path=figures_dir / "synthetic_coverage_vs_n.png", title="Synthetic coverage vs n")
     save_line_plot(summary, x="n_samples", y="mean_ci_width", group="method", path=figures_dir / "synthetic_ci_width_vs_n.png", title="Synthetic CI width vs n")
+    save_line_plot(summary, x="n_samples", y="sign_ece", group="method", path=figures_dir / "synthetic_sign_ece_vs_n.png", title="Synthetic sign ECE vs n")
+    save_line_plot(summary, x="n_samples", y="top_k_precision", group="method", path=figures_dir / "synthetic_topk_precision.png", title="Synthetic top-k precision")
     write_json({"config": cfg, "n_rows": int(len(summary))}, results_dir / "synthetic_calibration_metadata.json")
     return 0
 

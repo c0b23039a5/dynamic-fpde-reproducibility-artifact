@@ -193,6 +193,7 @@ Main generated outputs include:
 
 - `results/synthetic_calibration.csv`
 - `results/synthetic_calibration_summary.csv`
+- `results/synthetic_sign_calibration_bins.csv`
 - `results/openml_local_explanations.parquet`
 - `results/openml_seed_summary.csv`
 - `results/openml_global_summary.csv`
@@ -208,6 +209,30 @@ Main generated outputs include:
 - `results/bootstrap_confidence_intervals.csv`
 - figures under `figures/`
 
+Full synthetic calibration for paper reporting is configured separately in
+`configs/synthetic_full.yaml`:
+
+```bash
+python -m experiments.run_synthetic_calibration --config configs/synthetic_full.yaml --mode full
+```
+
+This run covers `n_samples=[50,100,500,1000]`,
+`n_features=[10,50,100]`, `n_informative=[3,5,10]`, three class-separation
+levels, independent/correlated features, balanced/imbalanced classes, and five
+seeds. It writes:
+
+- `results/synthetic_calibration.csv`
+- `results/synthetic_calibration_summary.csv`
+- `results/synthetic_sign_calibration_bins.csv`
+- `figures/synthetic_coverage_vs_n.png`
+- `figures/synthetic_ci_width_vs_n.png`
+- `figures/synthetic_sign_ece_vs_n.png`
+- `figures/synthetic_topk_precision.png`
+
+The full grid is intentionally large. Run the smoke mode first, then launch the
+full command on a machine or CI runner with enough CPU time. Do not copy numbers
+into the manuscript unless they were produced by an actual completed run.
+
 Bayesian-FPDE reports posterior mean, posterior standard deviation, 95% credible
 intervals, posterior sign probabilities, `P(|phi_j| > tau)`, mean/std ranks,
 and top-k rank probabilities. Optional SHAP, LIME, and AIME baselines are
@@ -218,7 +243,10 @@ Synthetic calibration uses known true prototype-contrast attributions from the
 data generator. `coverage_95` measures whether the 95% credible interval
 contains the true attribution. Sign calibration treats exactly zero true
 attributions as neutral and excludes them from sign-calibration denominators;
-the ignored count is reported. The reported sign metrics are:
+the ignored count is reported. The reported synthetic calibration metrics
+include `coverage_95`, `mean_ci_width`, `median_ci_width`, `sign_accuracy`,
+`top_k_precision`, `spearman_rank_correlation`, and `kendall_tau`. The reported
+sign calibration metrics are:
 
 - `sign_brier_score`: Brier score for predicted sign confidence versus whether
   the predicted sign is correct.

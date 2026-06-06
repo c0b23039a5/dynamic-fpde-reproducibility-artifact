@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from bayesian_fpde.utils import read_csv_preserve_metadata
 from experiments.aggregate_results import combine_openml_task_outputs
@@ -64,10 +65,26 @@ def test_all_smoke_commands_and_outputs():
     _run("experiments.run_synthetic_calibration", "--config", "configs/synthetic.yaml", "--mode", "smoke")
     synthetic = _csv(
         "results/synthetic_calibration_summary.csv",
-        REQUIRED_METADATA | {"coverage_95", "sign_brier_score", "sign_ece", "sign_accuracy_at_confidence_0_8", "sign_accuracy_at_confidence_0_9"},
+        REQUIRED_METADATA
+        | {
+            "coverage_95",
+            "mean_ci_width",
+            "median_ci_width",
+            "sign_accuracy",
+            "sign_brier_score",
+            "sign_ece",
+            "sign_accuracy_at_confidence_0_8",
+            "sign_accuracy_at_confidence_0_9",
+            "top_k_precision",
+            "spearman_rank_correlation",
+            "kendall_tau",
+        },
     )
     _csv("results/synthetic_sign_calibration_bins.csv", REQUIRED_METADATA | {"bin_id", "mean_confidence", "sign_accuracy"})
     assert (ROOT / "figures" / "synthetic_coverage_vs_n.png").exists()
+    assert (ROOT / "figures" / "synthetic_ci_width_vs_n.png").exists()
+    assert (ROOT / "figures" / "synthetic_sign_ece_vs_n.png").exists()
+    assert (ROOT / "figures" / "synthetic_topk_precision.png").exists()
 
     _run("experiments.run_openml_benchmark", "--config", "configs/openml_cc18.yaml", "--mode", "smoke")
     openml = _csv(
@@ -132,6 +149,19 @@ def test_all_smoke_commands_and_outputs():
 
     assert (ROOT / "figures" / "openml_faithfulness_boxplot.png").exists()
     assert (ROOT / "figures" / "ablation_lambda.png").exists()
+
+
+def test_synthetic_full_config_contains_paper_grid():
+    cfg = yaml.safe_load((ROOT / "configs" / "synthetic_full.yaml").read_text(encoding="utf-8"))
+    grid = cfg["grid"]
+    assert grid["n_samples"] == [50, 100, 500, 1000]
+    assert grid["n_features"] == [10, 50, 100]
+    assert grid["n_informative"] == [3, 5, 10]
+    assert grid["class_separation"] == ["small", "medium", "large"]
+    assert grid["feature_correlation"] == ["independent", "correlated"]
+    assert grid["class_balance"] == ["balanced", "imbalanced"]
+    assert cfg["seeds"] == [0, 1, 2, 3, 4]
+    assert "full" in cfg["modes"]
 
 
 def test_openml_raw_metrics_have_single_experiment_hash_and_job_hashes_vary(tmp_path: Path):

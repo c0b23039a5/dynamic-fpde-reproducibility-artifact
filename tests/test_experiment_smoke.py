@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from bayesian_fpde.utils import read_csv_preserve_metadata
+from experiments.aggregate_results import combine_openml_task_outputs
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_METADATA = {
@@ -17,6 +20,10 @@ REQUIRED_METADATA = {
     "config_hash",
     "experiment_config_hash",
     "workflow_run_id",
+    "workflow_run_attempt",
+    "workflow_name",
+    "workflow_ref",
+    "workflow_sha",
     "runner_invocation_hash",
     "run_config_hash",
     "job_config_hash",
@@ -36,7 +43,7 @@ def _run(module: str, *args: str) -> None:
 def _csv(path: str, required: set[str]) -> pd.DataFrame:
     target = ROOT / path
     assert target.exists(), path
-    df = pd.read_csv(target)
+    df = read_csv_preserve_metadata(target)
     assert not df.empty, path
     assert required.issubset(df.columns), f"{path} missing {sorted(required - set(df.columns))}"
     return df
@@ -161,7 +168,7 @@ def test_openml_raw_metrics_have_single_experiment_hash_and_job_hashes_vary(tmp_
         encoding="utf-8",
     )
     _run("experiments.run_openml_benchmark", "--config", str(config), "--mode", "smoke")
-    metrics = pd.read_csv(results / "openml_metrics.csv")
+    metrics = read_csv_preserve_metadata(results / "openml_metrics.csv")
     assert metrics["experiment_config_hash"].nunique() == 1
     assert metrics["config_hash"].nunique() == 1
     assert (metrics["config_hash"] == metrics["experiment_config_hash"]).all()
@@ -183,11 +190,57 @@ def test_openml_raw_metrics_have_single_experiment_hash_and_job_hashes_vary(tmp_
     assert bayes_skipped[["deletion_auc", "insertion_auc", "faithfulness_correlation", "combined_score"]].isna().all().all()
 
     _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
-    summary = pd.read_csv(results / "openml_method_summary.csv")
+    summary = read_csv_preserve_metadata(results / "openml_method_summary.csv")
     assert set(summary["n_experiment_config_hashes"]) == {1}
     assert summary["experiment_config_hash_consistent"].all()
     assert set(summary["experiment_config_hash"]) != {"multiple"}
     assert set(summary["config_hash"]) != {"multiple"}
+
+
+def test_openml_artifact_combine_preserves_sha_metadata_strings(tmp_path: Path):
+    sha = "2777e761b10ba6431735c0f7fb2fb3b05ab08559"
+    root = tmp_path / "bayesian_artifacts"
+    task_results = root / "task_31_seed_0" / "results"
+    task_results.mkdir(parents=True)
+    out = tmp_path / "results"
+    row = {
+        "method": "hyb_fpde",
+        "dataset_name": "dummy",
+        "task_id": "31",
+        "seed": "0",
+        "fold": "fold0",
+        "split_id": "fold0",
+        "mode": "medium",
+        "config_hash": "experimentabc",
+        "experiment_config_hash": "experimentabc",
+        "workflow_run_id": "123456789",
+        "workflow_run_attempt": "1",
+        "workflow_name": "Bayesian OpenML experiment",
+        "workflow_ref": "refs/heads/main",
+        "workflow_sha": sha,
+        "runner_invocation_hash": "runnerabc",
+        "run_config_hash": "runnerabc",
+        "job_config_hash": "jobabc",
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "git_commit": sha,
+        "status": "ok",
+        "error_message": "",
+        "explained_index": 0,
+        "deletion_drop_auc": 0.4,
+        "insertion_auc": 0.4,
+        "combined_score": 0.4,
+        "runtime_seconds": 0.1,
+    }
+    pd.DataFrame([row]).to_csv(task_results / "openml_metrics.csv", index=False)
+    pd.DataFrame([row]).to_csv(task_results / "openml_runtime.csv", index=False)
+    combine_openml_task_outputs(root, out)
+    combined = read_csv_preserve_metadata(out / "openml_metrics.csv")
+    assert str(combined.loc[0, "git_commit"]) == sha
+    assert str(combined.loc[0, "workflow_sha"]) == sha
+    assert str(combined.loc[0, "git_commit"]) != "2.777e+79"
+    assert str(combined.loc[0, "workflow_sha"]) != "2.777e+79"
+    assert not isinstance(combined.loc[0, "git_commit"], float)
+    assert not isinstance(combined.loc[0, "workflow_sha"], float)
 
 
 def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
@@ -210,6 +263,10 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
                         "config_hash": "experimentabc",
                         "experiment_config_hash": "experimentabc",
                         "workflow_run_id": "workflow1",
+                        "workflow_run_attempt": "1",
+                        "workflow_name": "Bayesian OpenML experiment",
+                        "workflow_ref": "refs/heads/main",
+                        "workflow_sha": "2777e761b10ba6431735c0f7fb2fb3b05ab08559",
                         "runner_invocation_hash": f"runner{seed}",
                         "run_config_hash": f"runner{seed}",
                         "job_config_hash": f"job{seed}",
@@ -239,9 +296,9 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
                 )
     pd.DataFrame(rows).to_csv(results / "openml_metrics.csv", index=False)
     _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
-    seed_summary = pd.read_csv(results / "openml_seed_summary.csv")
-    global_summary = pd.read_csv(results / "openml_global_summary.csv")
-    method_summary = pd.read_csv(results / "openml_method_summary.csv")
+    seed_summary = read_csv_preserve_metadata(results / "openml_seed_summary.csv")
+    global_summary = read_csv_preserve_metadata(results / "openml_global_summary.csv")
+    method_summary = read_csv_preserve_metadata(results / "openml_method_summary.csv")
     assert not seed_summary.empty
     assert not global_summary.empty
     assert method_summary["method"].nunique() == 2
@@ -253,14 +310,66 @@ def test_aggregate_openml_summaries_from_dummy_metrics(tmp_path: Path):
     assert set(method_summary["n_runner_invocation_hashes"]) == {2}
     assert int(method_summary["n_unique_explanation_units"].sum()) == 8
     for name in ["statistical_tests.csv", "effect_sizes.csv", "bootstrap_confidence_intervals.csv"]:
-        df = pd.read_csv(results / name)
+        df = read_csv_preserve_metadata(results / name)
         assert not df.empty
         assert "mode" in df.columns
         assert {"n_experiment_config_hashes", "experiment_config_hash_consistent", "experiment_config_hashes", "n_runner_invocation_hashes", "n_job_config_hashes"}.issubset(df.columns)
         assert df[["mode", "config_hash", "experiment_config_hash", "timestamp", "git_commit", "status"]].notna().any().all()
-    ci = pd.read_csv(results / "bootstrap_confidence_intervals.csv")
+    ci = read_csv_preserve_metadata(results / "bootstrap_confidence_intervals.csv")
     assert set(ci["unit_level"]) == {"dataset_seed"}
     assert {"n_units", "n_instance_rows"}.issubset(ci.columns)
+
+
+def test_matrix_metadata_semantics_allow_multiple_runner_and_job_hashes(tmp_path: Path):
+    results = tmp_path / "results"
+    figures = tmp_path / "figures"
+    results.mkdir()
+    rows = []
+    for seed in [0, 1]:
+        rows.append(
+            {
+                "method": "hyb_fpde",
+                "dataset_name": f"dummy_{seed}",
+                "task_id": str(31 + seed),
+                "seed": str(seed),
+                "fold": "fold0",
+                "split_id": "fold0",
+                "mode": "medium",
+                "config_hash": "experimentabc",
+                "experiment_config_hash": "experimentabc",
+                "workflow_run_id": "123456789",
+                "workflow_run_attempt": "1",
+                "workflow_name": "Bayesian OpenML experiment",
+                "workflow_ref": "refs/heads/main",
+                "workflow_sha": "2777e761b10ba6431735c0f7fb2fb3b05ab08559",
+                "runner_invocation_hash": f"runner{seed}",
+                "run_config_hash": f"runner{seed}",
+                "job_config_hash": f"job{seed}",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "git_commit": "2777e761b10ba6431735c0f7fb2fb3b05ab08559",
+                "status": "ok",
+                "error_message": "",
+                "explained_index": seed,
+                "deletion_drop_auc": 0.4,
+                "insertion_auc": 0.4,
+                "combined_score": 0.4,
+                "runtime_seconds": 0.1,
+            }
+        )
+    pd.DataFrame(rows).to_csv(results / "openml_metrics.csv", index=False)
+    metrics = read_csv_preserve_metadata(results / "openml_metrics.csv")
+    assert metrics["experiment_config_hash"].nunique() == 1
+    assert metrics["workflow_run_id"].nunique() == 1
+    assert metrics["config_hash"].nunique() == 1
+    assert metrics["runner_invocation_hash"].nunique() > 1
+    assert metrics["job_config_hash"].nunique() > 1
+    _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
+    summary = read_csv_preserve_metadata(results / "openml_method_summary.csv")
+    assert set(summary["n_experiment_config_hashes"]) == {1}
+    assert summary["experiment_config_hash_consistent"].all()
+    assert set(summary["n_workflow_run_ids"]) == {1}
+    assert summary["n_runner_invocation_hashes"].gt(1).all()
+    assert summary["n_job_config_hashes"].gt(1).all()
 
 
 def test_aggregate_marks_inconsistent_experiment_hashes(tmp_path: Path):
@@ -281,6 +390,10 @@ def test_aggregate_marks_inconsistent_experiment_hashes(tmp_path: Path):
                 "config_hash": experiment_hash,
                 "experiment_config_hash": experiment_hash,
                 "workflow_run_id": "workflow1",
+                "workflow_run_attempt": "1",
+                "workflow_name": "Bayesian OpenML experiment",
+                "workflow_ref": "refs/heads/main",
+                "workflow_sha": "2777e761b10ba6431735c0f7fb2fb3b05ab08559",
                 "runner_invocation_hash": f"runner{seed}",
                 "run_config_hash": f"runner{seed}",
                 "job_config_hash": f"job{seed}",
@@ -297,7 +410,7 @@ def test_aggregate_marks_inconsistent_experiment_hashes(tmp_path: Path):
         )
     pd.DataFrame(rows).to_csv(results / "openml_metrics.csv", index=False)
     _run("experiments.aggregate_results", "--results-dir", str(results), "--figures-dir", str(figures))
-    summary = pd.read_csv(results / "openml_method_summary.csv")
+    summary = read_csv_preserve_metadata(results / "openml_method_summary.csv")
     assert set(summary["n_experiment_config_hashes"]) == {2}
     assert not summary["experiment_config_hash_consistent"].all()
     assert set(summary["experiment_config_hash"]) == {"multiple"}

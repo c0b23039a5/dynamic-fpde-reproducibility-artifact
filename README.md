@@ -300,6 +300,9 @@ Configuration hashes are also split:
   jobs that belong to one paper-level OpenML run.
 - `workflow_run_id`: GitHub Actions run ID when available. It should be
   constant across all matrix jobs in one workflow run.
+- `workflow_run_attempt`, `workflow_name`, `workflow_ref`, and `workflow_sha`:
+  GitHub Actions provenance fields. `workflow_sha` is the exact commit SHA used
+  by the workflow.
 - `runner_invocation_hash`: hash of the actual per-runner config. In the
   OpenML matrix workflow this may vary across task_id x seed jobs because each
   job receives a narrowed generated config.
@@ -310,6 +313,11 @@ Configuration hashes are also split:
   `runner_invocation_hash`.
 - `config_hash`: deprecated backward-compatible alias for
   `experiment_config_hash`, which is the preferred paper-level identity.
+
+String-like metadata are read and written as strings during artifact
+combination and aggregation. In particular, `git_commit` and `workflow_sha`
+must remain exact SHA strings and must not be parsed into floats or scientific
+notation, even when a SHA starts with digits and contains `e`.
 
 Aggregate outputs expose hash consistency instead of hiding it:
 
@@ -329,6 +337,9 @@ Aggregate outputs expose hash consistency instead of hiding it:
   `n_experiment_config_hashes > 1` is not a valid single paper-level aggregate;
   it indicates mixed inputs and must be rerun or separated before paper
   reporting.
+  A matrix OpenML aggregate is valid when `experiment_config_hash` and
+  `workflow_run_id` are consistent, even if `runner_invocation_hash`,
+  deprecated `run_config_hash`, and `job_config_hash` have multiple values.
 
 SHAP explanations use a training-background sample rather than the explained
 instance alone. The runner samples up to `max_background=100` rows from

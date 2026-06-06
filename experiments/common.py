@@ -122,11 +122,19 @@ def config_hashes_for_job(
 ) -> Dict[str, str]:
     experiment_hash = str(cfg.get("experiment_config_hash", cfg.get("config_hash", "")))
     workflow_run_id = str(cfg.get("workflow_run_id", ""))
+    workflow_run_attempt = str(cfg.get("workflow_run_attempt", ""))
+    workflow_name = str(cfg.get("workflow_name", ""))
+    workflow_ref = str(cfg.get("workflow_ref", ""))
+    workflow_sha = str(cfg.get("workflow_sha", ""))
     runner_hash = str(cfg.get("runner_invocation_hash", cfg.get("run_config_hash", experiment_hash)))
     return {
         "config_hash": experiment_hash,
         "experiment_config_hash": experiment_hash,
         "workflow_run_id": workflow_run_id,
+        "workflow_run_attempt": workflow_run_attempt,
+        "workflow_name": workflow_name,
+        "workflow_ref": workflow_ref,
+        "workflow_sha": workflow_sha,
         "runner_invocation_hash": runner_hash,
         "run_config_hash": runner_hash,
         "job_config_hash": job_config_hash_for(
@@ -185,6 +193,10 @@ def evaluate_methods_for_dataset(
     run_config_hash: str = "",
     experiment_config_hash: str = "",
     workflow_run_id: str = "",
+    workflow_run_attempt: str = "",
+    workflow_name: str = "",
+    workflow_ref: str = "",
+    workflow_sha: str = "",
     runner_invocation_hash: str = "",
     job_config_hash: str = "",
     max_background: int = 100,
@@ -202,6 +214,10 @@ def evaluate_methods_for_dataset(
     runtime_rows: List[Dict[str, Any]] = []
     effective_experiment_config_hash = str(experiment_config_hash or config_hash or run_config_hash)
     effective_workflow_run_id = str(workflow_run_id)
+    effective_workflow_run_attempt = str(workflow_run_attempt)
+    effective_workflow_name = str(workflow_name)
+    effective_workflow_ref = str(workflow_ref)
+    effective_workflow_sha = str(workflow_sha)
     effective_runner_invocation_hash = str(runner_invocation_hash or run_config_hash or effective_experiment_config_hash)
     effective_job_config_hash = str(
         job_config_hash
@@ -235,6 +251,10 @@ def evaluate_methods_for_dataset(
         config_hash=effective_experiment_config_hash,
         experiment_config_hash=effective_experiment_config_hash,
         workflow_run_id=effective_workflow_run_id,
+        workflow_run_attempt=effective_workflow_run_attempt,
+        workflow_name=effective_workflow_name,
+        workflow_ref=effective_workflow_ref,
+        workflow_sha=effective_workflow_sha,
         runner_invocation_hash=effective_runner_invocation_hash,
         run_config_hash=effective_runner_invocation_hash,
         job_config_hash=effective_job_config_hash,
@@ -567,7 +587,7 @@ def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.Data
     status = grouped.apply(_status_counts).reset_index()
     summary = summary.merge(status, on=list(group_cols), how="left")
     summary["metric_direction"] = "higher_is_better"
-    for meta_col in ["mode", "git_commit"]:
+    for meta_col in ["mode", "git_commit", "workflow_run_attempt", "workflow_name", "workflow_ref", "workflow_sha"]:
         if meta_col in metrics.columns and meta_col not in summary.columns:
             meta = grouped[meta_col].agg(lambda s: next((str(v) for v in s if pd.notna(v) and str(v) != ""), "")).reset_index(name=meta_col)
             summary = summary.merge(meta, on=list(group_cols), how="left")

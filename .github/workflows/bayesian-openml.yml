@@ -213,6 +213,10 @@ jobs:
           METHODS: ${{ inputs.methods }}
           EXPERIMENT_CONFIG_HASH: ${{ needs.prepare-tasks.outputs.experiment_config_hash }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
           MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
           MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
         run: |
@@ -227,6 +231,10 @@ jobs:
               "logs_dir": "logs",
               "experiment_config_hash": os.environ["EXPERIMENT_CONFIG_HASH"],
               "workflow_run_id": os.environ["WORKFLOW_RUN_ID"],
+              "workflow_run_attempt": os.environ["WORKFLOW_RUN_ATTEMPT"],
+              "workflow_name": os.environ["WORKFLOW_NAME"],
+              "workflow_ref": os.environ["WORKFLOW_REF"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
               "suite_id": int(os.environ["SUITE_ID"]),
               "task_ids": [int(os.environ["TASK_ID"])],
               "seeds": [int(os.environ["SEED"])],
@@ -312,6 +320,10 @@ jobs:
           METHODS: ${{ inputs.methods }}
           EXPERIMENT_CONFIG_HASH: ${{ needs.prepare-tasks.outputs.experiment_config_hash }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
           MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
           MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
         run: |
@@ -326,6 +338,10 @@ jobs:
               "logs_dir": "logs",
               "experiment_config_hash": os.environ["EXPERIMENT_CONFIG_HASH"],
               "workflow_run_id": os.environ["WORKFLOW_RUN_ID"],
+              "workflow_run_attempt": os.environ["WORKFLOW_RUN_ATTEMPT"],
+              "workflow_name": os.environ["WORKFLOW_NAME"],
+              "workflow_ref": os.environ["WORKFLOW_REF"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
               "suite_id": int(os.environ["SUITE_ID"]),
               "task_ids": [int(os.environ["TASK_ID"])],
               "seeds": [int(os.environ["SEED"])],
@@ -411,6 +427,10 @@ jobs:
           METHODS: ${{ inputs.methods }}
           EXPERIMENT_CONFIG_HASH: ${{ needs.prepare-tasks.outputs.experiment_config_hash }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
           MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
           MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
         run: |
@@ -425,6 +445,10 @@ jobs:
               "logs_dir": "logs",
               "experiment_config_hash": os.environ["EXPERIMENT_CONFIG_HASH"],
               "workflow_run_id": os.environ["WORKFLOW_RUN_ID"],
+              "workflow_run_attempt": os.environ["WORKFLOW_RUN_ATTEMPT"],
+              "workflow_name": os.environ["WORKFLOW_NAME"],
+              "workflow_ref": os.environ["WORKFLOW_REF"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
               "suite_id": int(os.environ["SUITE_ID"]),
               "task_ids": [int(os.environ["TASK_ID"])],
               "seeds": [int(os.environ["SEED"])],
@@ -510,6 +534,10 @@ jobs:
           METHODS: ${{ inputs.methods }}
           EXPERIMENT_CONFIG_HASH: ${{ needs.prepare-tasks.outputs.experiment_config_hash }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
           MAX_TRAIN_ROWS: ${{ inputs.max_train_rows }}
           MAX_TEST_ROWS: ${{ inputs.max_test_rows }}
         run: |
@@ -524,6 +552,10 @@ jobs:
               "logs_dir": "logs",
               "experiment_config_hash": os.environ["EXPERIMENT_CONFIG_HASH"],
               "workflow_run_id": os.environ["WORKFLOW_RUN_ID"],
+              "workflow_run_attempt": os.environ["WORKFLOW_RUN_ATTEMPT"],
+              "workflow_name": os.environ["WORKFLOW_NAME"],
+              "workflow_ref": os.environ["WORKFLOW_REF"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
               "suite_id": int(os.environ["SUITE_ID"]),
               "task_ids": [int(os.environ["TASK_ID"])],
               "seeds": [int(os.environ["SEED"])],
@@ -605,33 +637,9 @@ jobs:
       - name: Combine task seed outputs
         run: |
           python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
+          from experiments.aggregate_results import combine_openml_task_outputs
 
-          root = Path("bayesian_artifacts")
-          out = Path("results")
-          out.mkdir(exist_ok=True)
-
-          csv_outputs = [
-              "openml_global_summary.csv",
-              "openml_metrics.csv",
-              "openml_runtime.csv",
-          ]
-          for name in csv_outputs:
-              frames = [pd.read_csv(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
-              if frames:
-                  pd.concat(frames, ignore_index=True, sort=False).to_csv(out / name, index=False, lineterminator="\n")
-
-          local_frames = []
-          for path in root.rglob("results/openml_local_explanations.parquet"):
-              try:
-                  local_frames.append(pd.read_parquet(path))
-              except Exception:
-                  pass
-          for path in root.rglob("results/openml_local_explanations.parquet.csv"):
-              local_frames.append(pd.read_csv(path))
-          if local_frames:
-              pd.concat(local_frames, ignore_index=True, sort=False).to_parquet(out / "openml_local_explanations.parquet", index=False)
+          combine_openml_task_outputs("bayesian_artifacts", "results")
           PY
 
       - name: Aggregate statistics

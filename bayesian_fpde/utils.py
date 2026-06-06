@@ -32,7 +32,36 @@ HASH_METADATA_KEYS = {
     "run_config_hash",
     "runner_invocation_hash",
     "workflow_run_id",
+    "workflow_run_attempt",
+    "workflow_name",
+    "workflow_ref",
+    "workflow_sha",
 }
+
+METADATA_STRING_COLUMNS = [
+    "method",
+    "dataset_name",
+    "task_id",
+    "seed",
+    "fold",
+    "split_id",
+    "mode",
+    "config_hash",
+    "experiment_config_hash",
+    "workflow_run_id",
+    "workflow_run_attempt",
+    "workflow_name",
+    "workflow_ref",
+    "workflow_sha",
+    "runner_invocation_hash",
+    "run_config_hash",
+    "job_config_hash",
+    "timestamp",
+    "git_commit",
+    "status",
+    "error_message",
+    "metric_direction",
+]
 
 
 def _hash_config(config: Mapping[str, Any]) -> Dict[str, Any]:
@@ -50,6 +79,10 @@ def mode_config(config: Mapping[str, Any], mode: str, *, runner_name: str = "") 
     ).strip()
     experiment_hash = explicit_experiment_hash or config_hash({"mode": mode, "runner_name": runner_name, "config": hash_config})
     workflow_run_id = str(config.get("workflow_run_id") or os.environ.get("BAYESIAN_FPDE_WORKFLOW_RUN_ID", "") or os.environ.get("GITHUB_RUN_ID", "")).strip()
+    workflow_run_attempt = str(config.get("workflow_run_attempt") or os.environ.get("BAYESIAN_FPDE_WORKFLOW_RUN_ATTEMPT", "") or os.environ.get("GITHUB_RUN_ATTEMPT", "")).strip()
+    workflow_name = str(config.get("workflow_name") or os.environ.get("BAYESIAN_FPDE_WORKFLOW_NAME", "") or os.environ.get("GITHUB_WORKFLOW", "")).strip()
+    workflow_ref = str(config.get("workflow_ref") or os.environ.get("BAYESIAN_FPDE_WORKFLOW_REF", "") or os.environ.get("GITHUB_REF", "")).strip()
+    workflow_sha = str(config.get("workflow_sha") or os.environ.get("BAYESIAN_FPDE_WORKFLOW_SHA", "") or os.environ.get("GITHUB_SHA", "")).strip()
     runner_hash = str(config.get("runner_invocation_hash") or os.environ.get("BAYESIAN_FPDE_RUNNER_INVOCATION_HASH", "")).strip()
     if not runner_hash:
         runner_hash = config_hash(
@@ -70,6 +103,10 @@ def mode_config(config: Mapping[str, Any], mode: str, *, runner_name: str = "") 
     merged["mode"] = mode
     merged["experiment_config_hash"] = experiment_hash
     merged["workflow_run_id"] = workflow_run_id
+    merged["workflow_run_attempt"] = workflow_run_attempt
+    merged["workflow_name"] = workflow_name
+    merged["workflow_ref"] = workflow_ref
+    merged["workflow_sha"] = workflow_sha
     merged["runner_invocation_hash"] = runner_hash
     # Backward compatibility: run_config_hash now identifies the runner
     # invocation, not the paper-level experiment.
@@ -99,7 +136,7 @@ def now_iso() -> str:
 def git_commit() -> str:
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
@@ -119,6 +156,10 @@ def base_metadata(**extra: Any) -> Dict[str, Any]:
         "config_hash": "",
         "experiment_config_hash": "",
         "workflow_run_id": "",
+        "workflow_run_attempt": "",
+        "workflow_name": "",
+        "workflow_ref": "",
+        "workflow_sha": "",
         "runner_invocation_hash": "",
         "run_config_hash": "",
         "job_config_hash": "",
@@ -146,6 +187,10 @@ def normalize_result_columns(df: pd.DataFrame) -> pd.DataFrame:
         "config_hash",
         "experiment_config_hash",
         "workflow_run_id",
+        "workflow_run_attempt",
+        "workflow_name",
+        "workflow_ref",
+        "workflow_sha",
         "runner_invocation_hash",
         "run_config_hash",
         "job_config_hash",
@@ -157,9 +202,22 @@ def normalize_result_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in required:
         if col not in out.columns:
             out[col] = ""
+    for col in METADATA_STRING_COLUMNS:
+        if col in out.columns:
+            out[col] = out[col].astype("string")
     front = [col for col in required if col in out.columns]
     rest = [col for col in out.columns if col not in front]
     return out[front + rest]
+
+
+def read_csv_preserve_metadata(path: str | Path, **kwargs: Any) -> pd.DataFrame:
+    path = Path(path)
+    header = pd.read_csv(path, nrows=0)
+    dtype = dict(kwargs.pop("dtype", {}) or {})
+    for col in METADATA_STRING_COLUMNS:
+        if col in header.columns:
+            dtype[col] = "string"
+    return pd.read_csv(path, dtype=dtype, **kwargs)
 
 
 def setup_logging(log_dir: str | Path = "logs", name: str = "bayesian_fpde") -> logging.Logger:

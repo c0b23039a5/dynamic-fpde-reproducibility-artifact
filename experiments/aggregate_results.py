@@ -7,7 +7,7 @@ import pandas as pd
 
 from experiments.common import _openml_summary
 from bayesian_fpde.stats import bootstrap_confidence_intervals, method_tests
-from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso
+from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso, read_csv_preserve_metadata
 
 
 def _unique_nonempty(df: pd.DataFrame, column: str) -> list[str]:
@@ -28,8 +28,35 @@ def _read_csvs(results_dir: Path) -> pd.DataFrame:
     for name in ["openml_metrics.csv", "faithfulness_metrics.csv", "synthetic_calibration_summary.csv", "stability_metrics.csv", "training_size_uncertainty.csv", "ablation_metrics.csv"]:
         path = results_dir / name
         if path.exists():
-            frames.append(pd.read_csv(path))
+            frames.append(read_csv_preserve_metadata(path))
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+
+def combine_openml_task_outputs(root: str | Path, out: str | Path) -> None:
+    root = Path(root)
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    csv_outputs = [
+        "openml_global_summary.csv",
+        "openml_metrics.csv",
+        "openml_runtime.csv",
+    ]
+    for name in csv_outputs:
+        frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
+        if frames:
+            pd.concat(frames, ignore_index=True, sort=False).to_csv(out / name, index=False, lineterminator="\n")
+
+    local_frames = []
+    for path in root.rglob("results/openml_local_explanations.parquet"):
+        try:
+            local_frames.append(pd.read_parquet(path))
+        except Exception:
+            pass
+    for path in root.rglob("results/openml_local_explanations.parquet.csv"):
+        local_frames.append(read_csv_preserve_metadata(path))
+    if local_frames:
+        pd.concat(local_frames, ignore_index=True, sort=False).to_parquet(out / "openml_local_explanations.parquet", index=False)
 
 
 def main() -> int:
@@ -44,7 +71,7 @@ def main() -> int:
     df = _read_csvs(results_dir)
     openml_path = results_dir / "openml_metrics.csv"
     if openml_path.exists():
-        openml_metrics = pd.read_csv(openml_path)
+        openml_metrics = read_csv_preserve_metadata(openml_path)
         _openml_summary(openml_metrics, ["dataset_name", "task_id", "seed", "method"]).to_csv(results_dir / "openml_seed_summary.csv", index=False, lineterminator="\n")
         _openml_summary(openml_metrics, ["dataset_name", "task_id", "method"]).to_csv(results_dir / "openml_global_summary.csv", index=False, lineterminator="\n")
         _openml_summary(openml_metrics, ["method"]).to_csv(results_dir / "openml_method_summary.csv", index=False, lineterminator="\n")
@@ -89,6 +116,11 @@ def main() -> int:
     workflow_ids: list[str] = []
     runner_hashes: list[str] = []
     job_hashes: list[str] = []
+    workflow_attempts: list[str] = []
+    workflow_names: list[str] = []
+    workflow_refs: list[str] = []
+    workflow_shas: list[str] = []
+    git_commits: list[str] = []
     if not df.empty:
         if "mode" in df.columns:
             mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
@@ -96,12 +128,19 @@ def main() -> int:
         workflow_ids = _unique_nonempty(df, "workflow_run_id")
         runner_hashes = _unique_nonempty(df, "runner_invocation_hash") or _unique_nonempty(df, "run_config_hash")
         job_hashes = _unique_nonempty(df, "job_config_hash")
+        workflow_attempts = _unique_nonempty(df, "workflow_run_attempt")
+        workflow_names = _unique_nonempty(df, "workflow_name")
+        workflow_refs = _unique_nonempty(df, "workflow_ref")
+        workflow_shas = _unique_nonempty(df, "workflow_sha")
+        git_commits = _unique_nonempty(df, "git_commit")
     experiment_hash_consistent = len(experiment_hashes) <= 1
     workflow_consistent = len(workflow_ids) <= 1
     if not experiment_hash_consistent:
         _write_hash_warning(logs_dir, f"aggregate input contains {len(experiment_hashes)} experiment_config_hash values; marking experiment_config_hash as multiple")
     experiment_hash_value = experiment_hashes[0] if experiment_hash_consistent and experiment_hashes else ("multiple" if experiment_hashes else "")
     runner_hash_value = runner_hashes[0] if len(runner_hashes) == 1 else ("multiple" if runner_hashes else "")
+    workflow_sha_value = workflow_shas[0] if len(workflow_shas) == 1 else ("multiple" if workflow_shas else "")
+    git_commit_value = git_commits[0] if len(git_commits) == 1 else (git_commit() if not git_commits else "multiple")
     common = {
         "mode": mode,
         "config_hash": experiment_hash_value,
@@ -110,6 +149,10 @@ def main() -> int:
         "experiment_config_hash_consistent": bool(experiment_hash_consistent),
         "experiment_config_hashes": ",".join(experiment_hashes) if len(experiment_hashes) <= 10 else "",
         "workflow_run_id": workflow_ids[0] if workflow_consistent and workflow_ids else ("multiple" if workflow_ids else ""),
+        "workflow_run_attempt": workflow_attempts[0] if len(workflow_attempts) == 1 else ("multiple" if workflow_attempts else ""),
+        "workflow_name": workflow_names[0] if len(workflow_names) == 1 else ("multiple" if workflow_names else ""),
+        "workflow_ref": workflow_refs[0] if len(workflow_refs) == 1 else ("multiple" if workflow_refs else ""),
+        "workflow_sha": workflow_sha_value,
         "n_workflow_run_ids": len(workflow_ids),
         "workflow_run_id_consistent": bool(workflow_consistent),
         "workflow_run_ids": ",".join(workflow_ids) if len(workflow_ids) <= 10 else "",
@@ -124,7 +167,7 @@ def main() -> int:
         "n_job_config_hashes": len(job_hashes),
         "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",
         "timestamp": now_iso(),
-        "git_commit": git_commit(),
+        "git_commit": git_commit_value,
     }
     for frame, default_status in [(tests, "ok"), (effects, "ok"), (ci, "ok")]:
         for key, value in common.items():

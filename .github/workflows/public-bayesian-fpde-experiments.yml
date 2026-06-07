@@ -1,0 +1,77 @@
+name: Public Bayesian-FPDE experiments
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Experiment mode to run"
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - pilot
+          - full
+      install_baselines:
+        description: "Install optional SHAP/LIME baseline dependencies"
+        required: true
+        default: false
+        type: boolean
+      run_tests:
+        description: "Run pytest before experiments"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  public-experiments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Install Bayesian-FPDE pipeline
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ inputs.install_baselines }}" = "true" ]; then
+            python -m pip install -e '.[dev,openml,baselines]'
+          else
+            python -m pip install -e '.[dev,openml]'
+          fi
+
+      - name: Run tests
+        if: ${{ inputs.run_tests }}
+        continue-on-error: true
+        run: |
+          python -m pytest
+
+      - name: Run public-data experiments
+        run: |
+          echo "Running public-data experiments with mode=${{ inputs.mode }}"
+          python -m experiments.run_public_uncertainty_validation --config configs/openml_public_4experiments.yaml --mode "${{ inputs.mode }}"
+          python -m experiments.run_stability --config configs/openml_public_4experiments.yaml --mode "${{ inputs.mode }}"
+          python -m experiments.run_faithfulness --config configs/openml_public_4experiments.yaml --mode "${{ inputs.mode }}"
+          python -m experiments.run_training_size_uncertainty --config configs/openml_public_4experiments.yaml --mode "${{ inputs.mode }}"
+          python -m experiments.aggregate_results --results-dir results --figures-dir figures
+
+      - name: Upload public experiment artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bayesian-fpde-public-${{ inputs.mode }}
+          path: |
+            results/
+            figures/
+            logs/
+          retention-days: 14

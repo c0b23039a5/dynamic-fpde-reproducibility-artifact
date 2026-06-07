@@ -1,0 +1,54 @@
+results_dir: results_ieee
+figures_dir: figures_ieee
+logs_dir: logs_ieee
+suite_id: 99
+task_ids: [31, 10101, 9946]
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+fold: 0
+repeat: 0
+sample: 0
+max_tasks: 3
+max_train_rows: 2000
+max_test_rows: 500
+n_explain: 50
+posterior_samples: 500
+bootstrap_samples: 50
+top_k: 5
+tau: 0.0
+lambda_hyb: 0.5
+model: auto
+train_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]
+methods:
+  - hyb_fpde
+  - bayesian_hyb_fpde
+  - bootstrap_fpde
+  - shap
+  - lime
+uncertainty_methods:
+  - bayesian_hyb_fpde
+  - bootstrap_fpde
+faithfulness_methods:
+  - hyb_fpde
+  - bayesian_hyb_fpde
+  - bootstrap_fpde
+  - shap
+  - lime
+modes:
+  ieee_min:
+    local_smoke: false
+    max_tasks: 3
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    n_explain: 50
+    posterior_samples: 500
+    bootstrap_samples: 50
+    train_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]
+  # ieee_full is intended for 5 public OpenML tasks after explicitly adding
+  # two more task IDs to task_ids; with the current list it runs 3 tasks.
+  ieee_full:
+    local_smoke: false
+    max_tasks: 5
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    n_explain: 50
+    posterior_samples: 500
+    bootstrap_samples: 50
+    train_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]

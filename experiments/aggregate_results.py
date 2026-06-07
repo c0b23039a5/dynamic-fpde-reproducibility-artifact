@@ -189,10 +189,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Aggregate Bayesian-FPDE experiment results.")
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--figures-dir", default="figures")
+    parser.add_argument("--logs-dir", default=None)
     args = parser.parse_args()
     results_dir = Path(args.results_dir)
     figures_dir = Path(args.figures_dir)
-    logs_dir = results_dir.parent / "logs"
+    logs_dir = Path(args.logs_dir) if args.logs_dir else results_dir.parent / "logs"
     ensure_dirs(results_dir, figures_dir)
 
     df = _read_csvs(results_dir)

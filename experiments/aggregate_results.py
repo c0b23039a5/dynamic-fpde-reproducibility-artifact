@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from experiments.common import _openml_summary
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.stats import bootstrap_confidence_intervals, method_tests
 from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso, read_csv_preserve_metadata
+from experiments.common import _openml_summary
+from experiments.public_aggregate import write_public_experiment_summaries
 
 
 def _unique_nonempty(df: pd.DataFrame, column: str) -> list[str]:
@@ -26,7 +27,15 @@ def _write_hash_warning(logs_dir: Path, message: str) -> None:
 
 def _read_csvs(results_dir: Path) -> pd.DataFrame:
     frames = []
-    for name in ["openml_metrics.csv", "faithfulness_metrics.csv", "synthetic_calibration_summary.csv", "stability_metrics.csv", "training_size_uncertainty.csv", "ablation_metrics.csv"]:
+    for name in [
+        "openml_metrics.csv",
+        "public_uncertainty_validation.csv",
+        "faithfulness_metrics.csv",
+        "stability_metrics.csv",
+        "training_size_uncertainty.csv",
+        "synthetic_calibration_summary.csv",
+        "ablation_metrics.csv",
+    ]:
         path = results_dir / name
         if path.exists():
             frames.append(read_csv_preserve_metadata(path))
@@ -37,17 +46,10 @@ def combine_openml_task_outputs(root: str | Path, out: str | Path) -> None:
     root = Path(root)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-
-    csv_outputs = [
-        "openml_global_summary.csv",
-        "openml_metrics.csv",
-        "openml_runtime.csv",
-    ]
-    for name in csv_outputs:
+    for name in ["openml_global_summary.csv", "openml_metrics.csv", "openml_runtime.csv"]:
         frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
         if frames:
             pd.concat(frames, ignore_index=True, sort=False).to_csv(out / name, index=False, lineterminator="\n")
-
     local_frames = []
     for path in root.rglob("results/openml_local_explanations.parquet"):
         try:
@@ -64,14 +66,11 @@ def combine_synthetic_task_outputs(root: str | Path, results_dir: str | Path, fi
     root = Path(root)
     results_dir = Path(results_dir)
     figures_dir = Path(figures_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
-
+    ensure_dirs(results_dir, figures_dir)
     for name in ["synthetic_calibration.csv", "synthetic_calibration_summary.csv", "synthetic_sign_calibration_bins.csv"]:
         frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
         if frames:
             pd.concat(frames, ignore_index=True, sort=False).to_csv(results_dir / name, index=False, lineterminator="\n")
-
     summary_path = results_dir / "synthetic_calibration_summary.csv"
     summary = read_csv_preserve_metadata(summary_path) if summary_path.exists() else pd.DataFrame()
     save_line_plot(summary, x="n_samples", y="coverage_95", group="method", path=figures_dir / "synthetic_coverage_vs_n.png", title="Synthetic coverage vs n")
@@ -80,80 +79,19 @@ def combine_synthetic_task_outputs(root: str | Path, results_dir: str | Path, fi
     save_line_plot(summary, x="n_samples", y="top_k_precision", group="method", path=figures_dir / "synthetic_topk_precision.png", title="Synthetic top-k precision")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Aggregate Bayesian-FPDE experiment results.")
-    parser.add_argument("--results-dir", default="results")
-    parser.add_argument("--figures-dir", default="figures")
-    args = parser.parse_args()
-    results_dir = Path(args.results_dir)
-    figures_dir = Path(args.figures_dir)
-    logs_dir = results_dir.parent / "logs"
-    ensure_dirs(results_dir, figures_dir)
-    df = _read_csvs(results_dir)
-    openml_path = results_dir / "openml_metrics.csv"
-    if openml_path.exists():
-        openml_metrics = read_csv_preserve_metadata(openml_path)
-        _openml_summary(openml_metrics, ["dataset_name", "task_id", "seed", "method"]).to_csv(results_dir / "openml_seed_summary.csv", index=False, lineterminator="\n")
-        _openml_summary(openml_metrics, ["dataset_name", "task_id", "method"]).to_csv(results_dir / "openml_global_summary.csv", index=False, lineterminator="\n")
-        _openml_summary(openml_metrics, ["method"]).to_csv(results_dir / "openml_method_summary.csv", index=False, lineterminator="\n")
-    metric = "combined_score" if "combined_score" in df.columns else "deletion_drop_auc"
-    if "combined_score" not in df.columns and {"deletion_drop_auc", "insertion_auc"}.issubset(df.columns):
-        df["combined_score"] = (df["deletion_drop_auc"] + df["insertion_auc"]) / 2.0
-        metric = "combined_score"
-    ok = df[df["status"] == "ok"] if not df.empty and "status" in df.columns else df
-    tests, effects = method_tests(ok, metric=metric)
-    ci = bootstrap_confidence_intervals(ok, metric=metric, n_bootstrap=200, unit_level="dataset_seed")
-    if tests.empty:
-        tests = pd.DataFrame(
-            [
-                {
-                    "test": "not_run",
-                    "metric": metric,
-                    "method_a": "",
-                    "method_b": "",
-                    "statistic": float("nan"),
-                    "p_value": float("nan"),
-                    "p_holm": float("nan"),
-                    "status": "skipped",
-                    "error_message": "insufficient paired method data for statistical tests",
-                }
-            ]
-        )
-    if effects.empty:
-        effects = pd.DataFrame(
-            [
-                {
-                    "metric": metric,
-                    "method_a": "",
-                    "method_b": "",
-                    "cliffs_delta": float("nan"),
-                    "status": "skipped",
-                    "error_message": "insufficient paired method data for effect sizes",
-                }
-            ]
-        )
+def _hash_metadata(df: pd.DataFrame, logs_dir: Path) -> dict[str, object]:
     mode = ""
-    experiment_hashes: list[str] = []
-    workflow_ids: list[str] = []
-    runner_hashes: list[str] = []
-    job_hashes: list[str] = []
-    workflow_attempts: list[str] = []
-    workflow_names: list[str] = []
-    workflow_refs: list[str] = []
-    workflow_shas: list[str] = []
-    git_commits: list[str] = []
-    if not df.empty:
-        if "mode" in df.columns:
-            mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
-        experiment_hashes = _unique_nonempty(df, "experiment_config_hash") or _unique_nonempty(df, "config_hash")
-        workflow_ids = _unique_nonempty(df, "workflow_run_id")
-        runner_hashes = _unique_nonempty(df, "runner_invocation_hash") or _unique_nonempty(df, "run_config_hash")
-        job_hashes = _unique_nonempty(df, "job_config_hash")
-        workflow_attempts = _unique_nonempty(df, "workflow_run_attempt")
-        workflow_names = _unique_nonempty(df, "workflow_name")
-        workflow_refs = _unique_nonempty(df, "workflow_ref")
-        workflow_shas = _unique_nonempty(df, "workflow_sha")
-        git_commits = _unique_nonempty(df, "git_commit")
+    if not df.empty and "mode" in df.columns:
+        mode = next((str(v) for v in df["mode"] if pd.notna(v) and str(v) != ""), "")
+    experiment_hashes = _unique_nonempty(df, "experiment_config_hash") or _unique_nonempty(df, "config_hash")
+    workflow_ids = _unique_nonempty(df, "workflow_run_id")
+    runner_hashes = _unique_nonempty(df, "runner_invocation_hash") or _unique_nonempty(df, "run_config_hash")
+    job_hashes = _unique_nonempty(df, "job_config_hash")
+    workflow_attempts = _unique_nonempty(df, "workflow_run_attempt")
+    workflow_names = _unique_nonempty(df, "workflow_name")
+    workflow_refs = _unique_nonempty(df, "workflow_ref")
+    workflow_shas = _unique_nonempty(df, "workflow_sha")
+    git_commits = _unique_nonempty(df, "git_commit")
     experiment_hash_consistent = len(experiment_hashes) <= 1
     workflow_consistent = len(workflow_ids) <= 1
     if not experiment_hash_consistent:
@@ -162,7 +100,7 @@ def main() -> int:
     runner_hash_value = runner_hashes[0] if len(runner_hashes) == 1 else ("multiple" if runner_hashes else "")
     workflow_sha_value = workflow_shas[0] if len(workflow_shas) == 1 else ("multiple" if workflow_shas else "")
     git_commit_value = git_commits[0] if len(git_commits) == 1 else (git_commit() if not git_commits else "multiple")
-    common = {
+    return {
         "mode": mode,
         "config_hash": experiment_hash_value,
         "experiment_config_hash": experiment_hash_value,
@@ -181,7 +119,6 @@ def main() -> int:
         "run_config_hash": runner_hash_value,
         "n_runner_invocation_hashes": len(runner_hashes),
         "runner_invocation_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
-        # Deprecated aliases retained for old downstream readers.
         "n_run_config_hashes": len(runner_hashes),
         "run_config_hash_consistent": bool(len(runner_hashes) <= 1),
         "run_config_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
@@ -190,6 +127,44 @@ def main() -> int:
         "timestamp": now_iso(),
         "git_commit": git_commit_value,
     }
+
+
+def _safe_tests(df: pd.DataFrame, metric: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    ok = df[df["status"] == "ok"] if not df.empty and "status" in df.columns else df
+    tests, effects = method_tests(ok, metric=metric)
+    ci = bootstrap_confidence_intervals(ok, metric=metric, n_bootstrap=200, unit_level="dataset_seed")
+    if tests.empty:
+        tests = pd.DataFrame([{"test": "not_run", "metric": metric, "method_a": "", "method_b": "", "statistic": float("nan"), "p_value": float("nan"), "p_holm": float("nan"), "status": "skipped", "error_message": "insufficient paired method data for statistical tests"}])
+    if effects.empty:
+        effects = pd.DataFrame([{"metric": metric, "method_a": "", "method_b": "", "cliffs_delta": float("nan"), "status": "skipped", "error_message": "insufficient paired method data for effect sizes"}])
+    return tests, effects, ci
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Aggregate Bayesian-FPDE experiment results.")
+    parser.add_argument("--results-dir", default="results")
+    parser.add_argument("--figures-dir", default="figures")
+    args = parser.parse_args()
+    results_dir = Path(args.results_dir)
+    figures_dir = Path(args.figures_dir)
+    logs_dir = results_dir.parent / "logs"
+    ensure_dirs(results_dir, figures_dir)
+
+    df = _read_csvs(results_dir)
+    openml_path = results_dir / "openml_metrics.csv"
+    if openml_path.exists():
+        openml_metrics = read_csv_preserve_metadata(openml_path)
+        _openml_summary(openml_metrics, ["dataset_name", "task_id", "seed", "method"]).to_csv(results_dir / "openml_seed_summary.csv", index=False, lineterminator="\n")
+        _openml_summary(openml_metrics, ["dataset_name", "task_id", "method"]).to_csv(results_dir / "openml_global_summary.csv", index=False, lineterminator="\n")
+        _openml_summary(openml_metrics, ["method"]).to_csv(results_dir / "openml_method_summary.csv", index=False, lineterminator="\n")
+    write_public_experiment_summaries(results_dir, figures_dir)
+
+    metric = "combined_score" if "combined_score" in df.columns else "deletion_drop_auc"
+    if "combined_score" not in df.columns and {"deletion_drop_auc", "insertion_auc"}.issubset(df.columns):
+        df["combined_score"] = (df["deletion_drop_auc"] + df["insertion_auc"]) / 2.0
+        metric = "combined_score"
+    tests, effects, ci = _safe_tests(df, metric=metric)
+    common = _hash_metadata(df, logs_dir)
     for frame, default_status in [(tests, "ok"), (effects, "ok"), (ci, "ok")]:
         for key, value in common.items():
             frame[key] = value
@@ -199,7 +174,6 @@ def main() -> int:
             frame["error_message"] = ""
         if "metric_direction" not in frame.columns:
             frame["metric_direction"] = "higher_is_better"
-
     tests.to_csv(results_dir / "statistical_tests.csv", index=False, lineterminator="\n")
     effects.to_csv(results_dir / "effect_sizes.csv", index=False, lineterminator="\n")
     ci.to_csv(results_dir / "bootstrap_confidence_intervals.csv", index=False, lineterminator="\n")

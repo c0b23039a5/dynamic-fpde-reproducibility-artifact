@@ -50,6 +50,7 @@ def parser_with_config(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--config", required=True)
     parser.add_argument("--mode", default="smoke")
+    parser.add_argument("--task-id", default=None, help="Comma-separated OpenML task_id filter.")
     return parser
 
 
@@ -59,6 +60,20 @@ def load_mode_config(path: str, mode: str, *, runner_name: str = "", runner_invo
         raw = dict(raw)
         raw["runner_invocation_context"] = runner_invocation_context
     return mode_config(raw, mode, runner_name=runner_name)
+
+
+def apply_task_id_filter(cfg: Dict[str, Any], task_id_filter: Optional[str]) -> Dict[str, Any]:
+    if not task_id_filter:
+        return cfg
+    task_ids = [int(value.strip()) for value in str(task_id_filter).split(",") if value.strip()]
+    if not task_ids:
+        return cfg
+    filtered = dict(cfg)
+    filtered["task_ids"] = task_ids
+    max_tasks = filtered.get("max_tasks")
+    if max_tasks:
+        filtered["max_tasks"] = min(int(max_tasks), len(task_ids))
+    return filtered
 
 
 def job_config_hash_for(

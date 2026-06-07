@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -77,6 +78,50 @@ def combine_synthetic_task_outputs(root: str | Path, results_dir: str | Path, fi
     save_line_plot(summary, x="n_samples", y="mean_ci_width", group="method", path=figures_dir / "synthetic_ci_width_vs_n.png", title="Synthetic CI width vs n")
     save_line_plot(summary, x="n_samples", y="sign_ece", group="method", path=figures_dir / "synthetic_sign_ece_vs_n.png", title="Synthetic sign ECE vs n")
     save_line_plot(summary, x="n_samples", y="top_k_precision", group="method", path=figures_dir / "synthetic_topk_precision.png", title="Synthetic top-k precision")
+
+
+def combine_public_task_outputs(root: str | Path, results_dir: str | Path, logs_dir: str | Path = "logs") -> None:
+    root = Path(root)
+    results_dir = Path(results_dir)
+    logs_dir = Path(logs_dir)
+    ensure_dirs(results_dir, logs_dir)
+    csv_names = [
+        "public_uncertainty_validation.csv",
+        "public_uncertainty_seed_features.csv",
+        "stability_metrics.csv",
+        "stability_seed_features.csv",
+        "stability_runtime.csv",
+        "faithfulness_metrics.csv",
+        "training_size_uncertainty.csv",
+        "training_size_seed_features.csv",
+    ]
+    for name in csv_names:
+        frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
+        if frames:
+            pd.concat(frames, ignore_index=True, sort=False).to_csv(results_dir / name, index=False, lineterminator="\n")
+
+    parquet_names = [
+        "public_uncertainty_local_explanations.parquet",
+        "stability_local_explanations.parquet",
+        "training_size_local_explanations.parquet",
+    ]
+    for name in parquet_names:
+        frames = []
+        for path in root.rglob(f"results/{name}"):
+            try:
+                frames.append(pd.read_parquet(path))
+            except Exception:
+                pass
+        for path in root.rglob(f"results/{name}.csv"):
+            frames.append(read_csv_preserve_metadata(path))
+        if frames:
+            pd.concat(frames, ignore_index=True, sort=False).to_parquet(results_dir / name, index=False)
+
+    for path in root.rglob("logs/*"):
+        if path.is_file():
+            artifact_name = path.parent.parent.name if path.parent.name == "logs" else path.parent.name
+            target = logs_dir / f"{artifact_name}-{path.name}"
+            shutil.copy2(path, target)
 
 
 def _hash_metadata(df: pd.DataFrame, logs_dir: Path) -> dict[str, object]:

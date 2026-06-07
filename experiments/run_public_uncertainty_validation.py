@@ -12,7 +12,7 @@ from bayesian_fpde.fpde import FPDEConfig
 from bayesian_fpde.metrics import spearman_corr, top_k_jaccard
 from bayesian_fpde.plotting import save_metric_boxplot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, setup_logging, write_csv, write_parquet_or_csv
-from experiments.common import config_hashes_for_job, explain_indices, load_mode_config, load_tabular_openml_or_local, parser_with_config
+from experiments.common import apply_task_id_filter, config_hashes_for_job, explain_indices, load_mode_config, load_tabular_openml_or_local, parser_with_config
 
 
 _BAYESIAN_METHODS: Dict[str, tuple[str, float]] = {
@@ -311,6 +311,7 @@ def _compute_public_uncertainty_metrics(seed_features: pd.DataFrame, cfg: Dict[s
 def main() -> int:
     args = parser_with_config("Run public-data uncertainty validation with leave-one-seed empirical references.").parse_args()
     cfg = load_mode_config(args.config, args.mode, runner_name="experiments.run_public_uncertainty_validation")
+    cfg = apply_task_id_filter(cfg, args.task_id)
     logger = setup_logging(cfg.get("logs_dir", "logs"), "public_uncertainty_validation")
     results_dir = Path(cfg.get("results_dir", "results"))
     figures_dir = Path(cfg.get("figures_dir", "figures"))

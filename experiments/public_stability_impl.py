@@ -10,7 +10,7 @@ import pandas as pd
 from bayesian_fpde.metrics import spearman_corr, top_k_jaccard
 from bayesian_fpde.plotting import save_metric_boxplot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, setup_logging, write_csv, write_parquet_or_csv
-from experiments.common import config_hashes_for_job, evaluate_methods_for_dataset, load_mode_config, load_tabular_openml_or_local, parser_with_config
+from experiments.common import apply_task_id_filter, config_hashes_for_job, evaluate_methods_for_dataset, load_mode_config, load_tabular_openml_or_local, parser_with_config
 
 
 def _pearson(a: np.ndarray, b: np.ndarray) -> float:
@@ -105,6 +105,7 @@ def stability_metrics(seed_feature_df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.
 def main() -> int:
     args = parser_with_config("Run public-data explanation stability experiments.").parse_args()
     cfg = load_mode_config(args.config, args.mode, runner_name="experiments.run_stability")
+    cfg = apply_task_id_filter(cfg, args.task_id)
     logger = setup_logging(cfg.get("logs_dir", "logs"), "stability")
     results_dir = Path(cfg.get("results_dir", "results"))
     figures_dir = Path(cfg.get("figures_dir", "figures"))

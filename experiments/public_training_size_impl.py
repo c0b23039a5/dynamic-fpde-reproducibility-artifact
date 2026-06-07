@@ -13,7 +13,7 @@ from bayesian_fpde.fpde import FPDEConfig
 from bayesian_fpde.metrics import top_k_jaccard
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.utils import base_metadata, ensure_dirs, setup_logging, write_csv, write_parquet_or_csv
-from experiments.common import config_hashes_for_job, explain_indices, load_mode_config, load_tabular_openml_or_local, parser_with_config
+from experiments.common import apply_task_id_filter, config_hashes_for_job, explain_indices, load_mode_config, load_tabular_openml_or_local, parser_with_config
 
 
 _BAYESIAN_METHODS: Dict[str, tuple[str, float]] = {
@@ -173,6 +173,7 @@ def training_size_metrics(feature_df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.D
 def main() -> int:
     args = parser_with_config("Run public-data training-size uncertainty experiments.").parse_args()
     cfg = load_mode_config(args.config, args.mode, runner_name="experiments.run_training_size_uncertainty")
+    cfg = apply_task_id_filter(cfg, args.task_id)
     logger = setup_logging(cfg.get("logs_dir", "logs"), "training_size_uncertainty")
     results_dir = Path(cfg.get("results_dir", "results"))
     figures_dir = Path(cfg.get("figures_dir", "figures"))

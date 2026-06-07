@@ -6,12 +6,13 @@ import pandas as pd
 
 from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.utils import ensure_dirs, setup_logging, write_csv
-from experiments.common import config_hashes_for_job, evaluate_methods_for_dataset, load_mode_config, load_tabular_openml_or_local, parser_with_config
+from experiments.common import apply_task_id_filter, config_hashes_for_job, evaluate_methods_for_dataset, load_mode_config, load_tabular_openml_or_local, parser_with_config
 
 
 def main() -> int:
     args = parser_with_config("Run deletion/insertion faithfulness experiments.").parse_args()
     cfg = load_mode_config(args.config, args.mode, runner_name="experiments.run_faithfulness")
+    cfg = apply_task_id_filter(cfg, args.task_id)
     logger = setup_logging(cfg.get("logs_dir", "logs"), "faithfulness")
     results_dir = Path(cfg.get("results_dir", "results"))
     figures_dir = Path(cfg.get("figures_dir", "figures"))

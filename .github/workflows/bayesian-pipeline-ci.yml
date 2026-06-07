@@ -23,7 +23,7 @@ jobs:
           python-version: "3.14"
           cache: "pip"
 
-      - name: Install Bayesian pipeline
+      - name: Install Bayesian-FPDE pipeline
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
@@ -32,22 +32,19 @@ jobs:
         run: |
           python -m pytest
 
-      - name: Run smoke experiments
+      - name: Run public-data smoke experiments
         run: |
-          python -m experiments.run_synthetic_calibration --config configs/synthetic.yaml --mode smoke
-          python -m experiments.run_openml_benchmark --config configs/openml_cc18.yaml --mode smoke
-          python -m experiments.run_stability --config configs/openml_cc18.yaml --mode smoke
-          python -m experiments.run_faithfulness --config configs/openml_cc18.yaml --mode smoke
-          python -m experiments.run_training_size_uncertainty --config configs/synthetic.yaml --mode smoke
-          python -m experiments.run_ablation --config configs/ablation.yaml --mode smoke
-          python -m experiments.run_case_studies --config configs/case_study.yaml --mode smoke
+          python -m experiments.run_public_uncertainty_validation --config configs/openml_public_4experiments.yaml --mode smoke
+          python -m experiments.run_stability --config configs/openml_public_4experiments.yaml --mode smoke
+          python -m experiments.run_faithfulness --config configs/openml_public_4experiments.yaml --mode smoke
+          python -m experiments.run_training_size_uncertainty --config configs/openml_public_4experiments.yaml --mode smoke
           python -m experiments.aggregate_results --results-dir results --figures-dir figures
 
-      - name: Upload Bayesian smoke artifacts
+      - name: Upload Bayesian-FPDE public smoke artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: bayesian-pipeline-smoke
+          name: bayesian-fpde-public-smoke
           path: |
             results/
             figures/

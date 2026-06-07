@@ -1,30 +1,24 @@
 cff-version: 1.2.0
 title: >-
-  Feature Prototype Direction Explainer Reproducibility
-  Artifact
+  Bayesian-FPDE Reproducibility Artifact
 message: >-
   If you use this reproducibility artifact, please cite this artifact.
-  If you use the FPDE method or results, please also cite the associated
-  FPDE manuscript or article when available.
+  If you use the Bayesian-FPDE method or results, please also cite the
+  associated Bayesian-FPDE manuscript or article when available.
 type: software
 authors:
   - family-names: Kato
     given-names: Yuki
     orcid: 'https://orcid.org/0009-0008-8184-7946'
-identifiers:
-  - type: doi
-    value: 10.5281/zenodo.20225275
-    description: Zenodo
 repository-code: >-
-  https://github.com/fpde-xai/fpde-reproducibility-artifact
-repository-artifact: >-
-  https://github.com/fpde-xai/fpde-reproducibility-artifact/releases
+  https://github.com/c0b23039a5/bayesian-fpde-reproducibility-artifact
 keywords:
   - explainable artificial intelligence
   - feature attribution
+  - uncertainty quantification
   - prototype-based explanation
   - OpenML-CC18
   - reproducibility artifact
 license: Apache-2.0
 version: v0.1.0
-date-released: '2026-05-30'
+date-released: '2026-06-07'

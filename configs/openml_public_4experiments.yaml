@@ -36,7 +36,7 @@ faithfulness_methods:
 modes:
   smoke:
     local_smoke: true
-    seeds: [0]
+    seeds: [0, 1]
     max_tasks: 1
     n_explain: 3
     posterior_samples: 30

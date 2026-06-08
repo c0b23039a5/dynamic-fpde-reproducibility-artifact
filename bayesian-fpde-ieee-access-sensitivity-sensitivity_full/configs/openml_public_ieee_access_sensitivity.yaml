@@ -1,0 +1,63 @@
+results_dir: results_ieee_sensitivity
+figures_dir: figures_ieee_sensitivity
+logs_dir: logs_ieee_sensitivity
+suite_id: 99
+task_ids: [31, 37, 9946, 10093, 10101]
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+fold: 0
+repeat: 0
+sample: 0
+max_tasks: 5
+max_train_rows: 2000
+max_test_rows: 500
+n_explain: 50
+posterior_samples: 500
+bootstrap_samples: 50
+top_k: 5
+tau: 0.0
+# lambda_hyb is the existing Hyb-FPDE mixing weight:
+# attribution = lambda_hyb * diff + (1 - lambda_hyb) * cos.
+lambda_hyb: 0.5
+model: auto
+train_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]
+methods:
+  - bayesian_hyb_fpde
+uncertainty_methods:
+  - bayesian_hyb_fpde
+posterior_samples_grid:
+  - 100
+  - 300
+  - 500
+lambda_hyb_grid:
+  - 0.25
+  - 0.5
+  - 0.75
+modes:
+  sensitivity_smoke:
+    max_tasks: 1
+    seeds: [0]
+    posterior_samples_grid: [100]
+    lambda_hyb_grid: [0.5]
+    n_explain: 10
+    bootstrap_samples: 10
+  sensitivity_posterior:
+    max_tasks: 5
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    posterior_samples_grid: [100, 300, 500]
+    lambda_hyb_grid: [0.5]
+    n_explain: 50
+    bootstrap_samples: 50
+  sensitivity_lambda:
+    max_tasks: 5
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    posterior_samples_grid: [500]
+    lambda_hyb_grid: [0.25, 0.5, 0.75]
+    n_explain: 50
+    bootstrap_samples: 50
+  sensitivity_full:
+    max_tasks: 5
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    posterior_samples_grid: [100, 300, 500]
+    lambda_hyb_grid: [0.25, 0.5, 0.75]
+    n_explain: 50
+    bootstrap_samples: 50

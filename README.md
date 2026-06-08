@@ -30,15 +30,22 @@ For OpenML and optional baselines:
 python -m pip install -e .[dev,openml,baselines]
 ```
 
-## Public-data configuration
+## IEEE Access public-data configuration
 
 ```text
-configs/openml_public_4experiments.yaml
+configs/openml_public_ieee_access.yaml
+configs/openml_public_ieee_access_sensitivity.yaml
 ```
 
-The configuration defines OpenML suite ID `99`, task IDs, seeds, train/test row limits, explanation count, posterior/bootstrap sample counts, top-k, and training fractions.
+These configurations define OpenML suite ID `99`, IEEE Access task IDs, seeds, train/test row limits, explanation count, posterior/bootstrap sample counts, top-k, training fractions, and sensitivity grids.
 
-The `smoke` mode is only an implementation check. It may use a local OpenML-shaped smoke dataset so CI can run without network access. Do not report smoke-mode numbers as paper results.
+The active GitHub Actions workflows are:
+
+- `.github/workflows/ieee-access-bayesian-fpde-experiments.yml`
+- `.github/workflows/ieee-access-sensitivity.yml`
+- `.github/workflows/artifact-check.yml`
+
+Do not report local smoke or test-mode numbers as paper results.
 
 ## Four public-data experiments
 
@@ -49,33 +56,37 @@ The `smoke` mode is only an implementation check. It may use a local OpenML-shap
 | Faithfulness experiment | Check whether replacing important features with a baseline changes model output | Faithfulness correlation, deletion AUC, insertion AUC |
 | Training-size uncertainty | Check whether uncertainty decreases and explanations approach full-training references as training data increases | CI width, posterior std, sign confidence, distance to full-training reference |
 
-## Smoke workflow
+## IEEE Access workflow commands
 
 ```bash
-python -m pip install -e .[dev]
+python -m pip install -e .[dev,openml]
 python -m pytest
 
-python -m experiments.run_public_uncertainty_validation --config configs/openml_public_4experiments.yaml --mode smoke
-python -m experiments.run_stability --config configs/openml_public_4experiments.yaml --mode smoke
-python -m experiments.run_faithfulness --config configs/openml_public_4experiments.yaml --mode smoke
-python -m experiments.run_training_size_uncertainty --config configs/openml_public_4experiments.yaml --mode smoke
-python -m experiments.aggregate_results --results-dir results --figures-dir figures
+python -m experiments.run_public_uncertainty_validation --config configs/openml_public_ieee_access.yaml --mode ieee_min
+python -m experiments.run_stability --config configs/openml_public_ieee_access.yaml --mode ieee_min
+python -m experiments.run_faithfulness --config configs/openml_public_ieee_access.yaml --mode ieee_min
+python -m experiments.run_training_size_uncertainty --config configs/openml_public_ieee_access.yaml --mode ieee_min
+python -m experiments.aggregate_results --results-dir results_ieee --figures-dir figures_ieee --logs-dir logs_ieee
+
+python experiments/run_sensitivity_analysis.py --config configs/openml_public_ieee_access_sensitivity.yaml --mode sensitivity_smoke
 ```
 
 ## Main outputs
 
 ```text
-results/public_uncertainty_validation.csv
-results/stability_metrics.csv
-results/faithfulness_metrics.csv
-results/training_size_uncertainty.csv
-results/public_uncertainty_validation_summary.csv
-results/stability_summary.csv
-results/faithfulness_summary.csv
-results/training_size_uncertainty_summary.csv
-results/statistical_tests.csv
-results/effect_sizes.csv
-results/bootstrap_confidence_intervals.csv
+results_ieee/public_uncertainty_validation.csv
+results_ieee/stability_metrics.csv
+results_ieee/faithfulness_metrics.csv
+results_ieee/training_size_uncertainty.csv
+results_ieee/public_uncertainty_validation_summary.csv
+results_ieee/stability_summary.csv
+results_ieee/faithfulness_summary.csv
+results_ieee/training_size_uncertainty_summary.csv
+results_ieee/statistical_tests.csv
+results_ieee/effect_sizes.csv
+results_ieee/bootstrap_confidence_intervals.csv
+results_ieee_sensitivity/sensitivity_results.csv
+results_ieee_sensitivity/sensitivity_summary.csv
 ```
 
 ## Metric interpretation
@@ -83,7 +94,6 @@ results/bootstrap_confidence_intervals.csv
 - `empirical_reference_coverage_95` is coverage against a leave-one-seed empirical reference, not true attribution coverage.
 - `attribution_distance_to_full_train` is distance to a full-training empirical reference, not distance to a true attribution.
 - Faithfulness metrics depend on the chosen baseline. The shared evaluation path currently uses the training-set mean as the baseline.
-- Synthetic known-truth calibration may remain as auxiliary code, but it is not the main public-data experiment described here.
 
 ## Citation
 

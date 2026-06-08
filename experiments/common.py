@@ -18,14 +18,13 @@ from bayesian_fpde.datasets import (
     fit_black_box,
     generate_synthetic_gaussian,
     get_suite_task_ids,
-    load_case_study_dataset,
     load_openml_task,
     preprocess_train_test,
     split_openml_or_stratified,
 )
 from bayesian_fpde.fpde import FPDEConfig, class_prototypes, explain_fpde
 from bayesian_fpde.metrics import deletion_insertion_metrics, stability_metrics, top_k_jaccard
-from bayesian_fpde.utils import base_metadata, config_hash as stable_config_hash, ensure_dirs, load_yaml, mode_config, setup_logging, write_csv, write_json, write_parquet_or_csv
+from bayesian_fpde.utils import base_metadata, config_hash as stable_config_hash, ensure_dirs, load_yaml, mode_config, setup_logging, write_csv
 
 
 DETERMINISTIC_METHODS = {
@@ -42,8 +41,6 @@ BAYESIAN_METHODS = {
 }
 
 OPTIONAL_METHODS = {"shap", "lime", "aime", "bayesshap", "bayeslime", "bayesian_aime"}
-EXPLANATION_UNIT_COLS = ["dataset_name", "task_id", "seed", "fold", "explained_index"]
-DATASET_SEED_UNIT_COLS = ["dataset_name", "task_id", "seed", "fold"]
 
 
 def parser_with_config(description: str) -> argparse.ArgumentParser:
@@ -490,140 +487,3 @@ def load_tabular_openml_or_local(cfg: Dict[str, Any], *, seed: int, mode: str):
         y_train, y_test = y[train_idx], y[test_idx]
         model, model_name = fit_black_box(X_train, y_train, seed=seed, model_name=str(cfg.get("model", "auto")), feature_names_in=names)
         yield (int(task_id), (dataset_name, X_train, y_train, X_test, y_test, model, names, model_name), split_name)
-
-
-def _status_counts(group: pd.DataFrame) -> pd.Series:
-    counts = group["status"].value_counts() if "status" in group.columns else pd.Series(dtype=int)
-    return pd.Series(
-        {
-            "status_ok": int(counts.get("ok", 0)),
-            "status_skipped": int(counts.get("skipped", 0)),
-            "status_error": int(counts.get("error", 0)),
-        }
-    )
-
-
-def _unique_nonempty(values: pd.Series) -> List[str]:
-    return sorted({str(v) for v in values if pd.notna(v) and str(v) != ""})
-
-
-def _unique_explanation_units(group: pd.DataFrame) -> int:
-    unit_cols = [col for col in EXPLANATION_UNIT_COLS if col in group.columns]
-    if unit_cols:
-        return int(group[unit_cols].drop_duplicates().shape[0])
-    return int(len(group))
-
-
-def _hash_consistency(group: pd.DataFrame) -> pd.Series:
-    experiment_hashes = _unique_nonempty(group["experiment_config_hash"]) if "experiment_config_hash" in group.columns else []
-    if not experiment_hashes:
-        experiment_hashes = _unique_nonempty(group["config_hash"]) if "config_hash" in group.columns else []
-    workflow_ids = _unique_nonempty(group["workflow_run_id"]) if "workflow_run_id" in group.columns else []
-    runner_hashes = _unique_nonempty(group["runner_invocation_hash"]) if "runner_invocation_hash" in group.columns else []
-    if not runner_hashes:
-        runner_hashes = _unique_nonempty(group["run_config_hash"]) if "run_config_hash" in group.columns else []
-    job_hashes = _unique_nonempty(group["job_config_hash"]) if "job_config_hash" in group.columns else []
-    experiment_consistent = len(experiment_hashes) <= 1
-    workflow_consistent = len(workflow_ids) <= 1
-    experiment_hash = experiment_hashes[0] if experiment_consistent and experiment_hashes else ("multiple" if experiment_hashes else "")
-    runner_hash = runner_hashes[0] if len(runner_hashes) == 1 else ("multiple" if runner_hashes else "")
-    return pd.Series(
-        {
-            "config_hash": experiment_hash,
-            "experiment_config_hash": experiment_hash,
-            "n_experiment_config_hashes": int(len(experiment_hashes)),
-            "experiment_config_hash_consistent": bool(experiment_consistent),
-            "experiment_config_hashes": ",".join(experiment_hashes) if len(experiment_hashes) <= 10 else "",
-            "workflow_run_id": workflow_ids[0] if workflow_consistent and workflow_ids else ("multiple" if workflow_ids else ""),
-            "n_workflow_run_ids": int(len(workflow_ids)),
-            "workflow_run_id_consistent": bool(workflow_consistent),
-            "workflow_run_ids": ",".join(workflow_ids) if len(workflow_ids) <= 10 else "",
-            "runner_invocation_hash": runner_hash,
-            "run_config_hash": runner_hash,
-            "n_runner_invocation_hashes": int(len(runner_hashes)),
-            "runner_invocation_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
-            # Deprecated aliases retained for old downstream readers.
-            "n_run_config_hashes": int(len(runner_hashes)),
-            "run_config_hash_consistent": bool(len(runner_hashes) <= 1),
-            "run_config_hashes": ",".join(runner_hashes) if len(runner_hashes) <= 10 else "",
-            "job_config_hash": job_hashes[0] if job_hashes else "",
-            "n_job_config_hashes": int(len(job_hashes)),
-            "job_config_hashes": ",".join(job_hashes) if len(job_hashes) <= 10 else "",
-        }
-    )
-
-
-def _openml_summary(metrics: pd.DataFrame, group_cols: Sequence[str]) -> pd.DataFrame:
-    if metrics.empty:
-        return pd.DataFrame()
-    mean_cols = [
-        "deletion_auc",
-        "deletion_drop_auc",
-        "insertion_auc",
-        "faithfulness_correlation",
-        "number_of_model_calls",
-        "explanation_model_calls",
-        "evaluation_model_calls",
-        "total_model_calls",
-        "top_k_jaccard",
-        "test_accuracy",
-        "combined_score",
-        "background_size",
-        "max_background",
-    ]
-    available_mean_cols = [col for col in mean_cols if col in metrics.columns]
-    grouped = metrics.groupby(list(group_cols), dropna=False)
-    summary = grouped.agg(
-        n_rows=("method", "size"),
-        n_explanation_rows=("method", "size"),
-        n_datasets=("dataset_name", "nunique"),
-        n_seeds=("seed", "nunique"),
-        **{f"mean_{col}": (col, "mean") for col in available_mean_cols},
-    ).reset_index()
-    unique_units = grouped.apply(_unique_explanation_units).reset_index(name="n_unique_explanation_units")
-    summary = summary.merge(unique_units, on=list(group_cols), how="left")
-    summary["n_unique_explained_indices"] = summary["n_unique_explanation_units"]
-    summary["n_explain_instances"] = summary["n_unique_explanation_units"]
-
-    unit_parent_cols = list(dict.fromkeys(list(group_cols) + [col for col in DATASET_SEED_UNIT_COLS if col in metrics.columns]))
-    per_dataset_seed = metrics.groupby(unit_parent_cols, dropna=False).apply(_unique_explanation_units).reset_index(name="explanation_units_per_dataset_seed")
-    per_dataset_seed_grouped = per_dataset_seed.groupby(list(group_cols), dropna=False)["explanation_units_per_dataset_seed"].agg(
-        mean_explanation_units_per_dataset_seed="mean",
-        min_explanation_units_per_dataset_seed="min",
-        max_explanation_units_per_dataset_seed="max",
-    ).reset_index()
-    summary = summary.merge(per_dataset_seed_grouped, on=list(group_cols), how="left")
-    summary["mean_explain_instances_per_seed"] = summary["mean_explanation_units_per_dataset_seed"]
-    summary["min_explain_instances_per_seed"] = summary["min_explanation_units_per_dataset_seed"]
-    summary["max_explain_instances_per_seed"] = summary["max_explanation_units_per_dataset_seed"]
-
-    if "runtime_seconds" in metrics.columns:
-        runtime_all = grouped["runtime_seconds"].mean().reset_index(name="mean_runtime_seconds_all_rows")
-        summary = summary.merge(runtime_all, on=list(group_cols), how="left")
-        if "status" in metrics.columns:
-            ok_runtime = metrics[metrics["status"] == "ok"].groupby(list(group_cols), dropna=False)["runtime_seconds"].mean().reset_index(name="mean_runtime_seconds_ok_only")
-        else:
-            ok_runtime = runtime_all.rename(columns={"mean_runtime_seconds_all_rows": "mean_runtime_seconds_ok_only"})
-        summary = summary.merge(ok_runtime, on=list(group_cols), how="left")
-        summary["mean_runtime_seconds"] = summary["mean_runtime_seconds_ok_only"]
-
-    status = grouped.apply(_status_counts).reset_index()
-    summary = summary.merge(status, on=list(group_cols), how="left")
-    summary["metric_direction"] = "higher_is_better"
-    for meta_col in ["mode", "git_commit", "workflow_run_attempt", "workflow_name", "workflow_ref", "workflow_sha"]:
-        if meta_col in metrics.columns and meta_col not in summary.columns:
-            meta = grouped[meta_col].agg(lambda s: next((str(v) for v in s if pd.notna(v) and str(v) != ""), "")).reset_index(name=meta_col)
-            summary = summary.merge(meta, on=list(group_cols), how="left")
-    hash_meta = grouped.apply(_hash_consistency).reset_index()
-    summary = summary.merge(hash_meta, on=list(group_cols), how="left")
-    return summary
-
-
-def write_standard_outputs(results_dir: str | Path, figures_dir: str | Path, local: pd.DataFrame, metrics: pd.DataFrame, runtime: pd.DataFrame) -> None:
-    ensure_dirs(results_dir, figures_dir)
-    write_parquet_or_csv(local, Path(results_dir) / "openml_local_explanations.parquet")
-    write_csv(_openml_summary(metrics, ["dataset_name", "task_id", "seed", "method"]), Path(results_dir) / "openml_seed_summary.csv")
-    write_csv(_openml_summary(metrics, ["dataset_name", "task_id", "method"]), Path(results_dir) / "openml_global_summary.csv")
-    write_csv(_openml_summary(metrics, ["method"]), Path(results_dir) / "openml_method_summary.csv")
-    write_csv(metrics, Path(results_dir) / "openml_metrics.csv")
-    write_csv(runtime, Path(results_dir) / "openml_runtime.csv")

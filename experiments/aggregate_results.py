@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 from pathlib import Path
 
 import pandas as pd
 
-from bayesian_fpde.plotting import save_line_plot
 from bayesian_fpde.stats import bootstrap_confidence_intervals, method_tests
 from bayesian_fpde.utils import ensure_dirs, git_commit, now_iso, read_csv_preserve_metadata
-from experiments.common import _openml_summary
 from experiments.public_aggregate import write_public_experiment_summaries
 
 
@@ -29,99 +26,15 @@ def _write_hash_warning(logs_dir: Path, message: str) -> None:
 def _read_csvs(results_dir: Path) -> pd.DataFrame:
     frames = []
     for name in [
-        "openml_metrics.csv",
         "public_uncertainty_validation.csv",
         "faithfulness_metrics.csv",
         "stability_metrics.csv",
         "training_size_uncertainty.csv",
-        "synthetic_calibration_summary.csv",
-        "ablation_metrics.csv",
     ]:
         path = results_dir / name
         if path.exists():
             frames.append(read_csv_preserve_metadata(path))
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
-
-
-def combine_openml_task_outputs(root: str | Path, out: str | Path) -> None:
-    root = Path(root)
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    for name in ["openml_global_summary.csv", "openml_metrics.csv", "openml_runtime.csv"]:
-        frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
-        if frames:
-            pd.concat(frames, ignore_index=True, sort=False).to_csv(out / name, index=False, lineterminator="\n")
-    local_frames = []
-    for path in root.rglob("results/openml_local_explanations.parquet"):
-        try:
-            local_frames.append(pd.read_parquet(path))
-        except Exception:
-            pass
-    for path in root.rglob("results/openml_local_explanations.parquet.csv"):
-        local_frames.append(read_csv_preserve_metadata(path))
-    if local_frames:
-        pd.concat(local_frames, ignore_index=True, sort=False).to_parquet(out / "openml_local_explanations.parquet", index=False)
-
-
-def combine_synthetic_task_outputs(root: str | Path, results_dir: str | Path, figures_dir: str | Path) -> None:
-    root = Path(root)
-    results_dir = Path(results_dir)
-    figures_dir = Path(figures_dir)
-    ensure_dirs(results_dir, figures_dir)
-    for name in ["synthetic_calibration.csv", "synthetic_calibration_summary.csv", "synthetic_sign_calibration_bins.csv"]:
-        frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
-        if frames:
-            pd.concat(frames, ignore_index=True, sort=False).to_csv(results_dir / name, index=False, lineterminator="\n")
-    summary_path = results_dir / "synthetic_calibration_summary.csv"
-    summary = read_csv_preserve_metadata(summary_path) if summary_path.exists() else pd.DataFrame()
-    save_line_plot(summary, x="n_samples", y="coverage_95", group="method", path=figures_dir / "synthetic_coverage_vs_n.png", title="Synthetic coverage vs n")
-    save_line_plot(summary, x="n_samples", y="mean_ci_width", group="method", path=figures_dir / "synthetic_ci_width_vs_n.png", title="Synthetic CI width vs n")
-    save_line_plot(summary, x="n_samples", y="sign_ece", group="method", path=figures_dir / "synthetic_sign_ece_vs_n.png", title="Synthetic sign ECE vs n")
-    save_line_plot(summary, x="n_samples", y="top_k_precision", group="method", path=figures_dir / "synthetic_topk_precision.png", title="Synthetic top-k precision")
-
-
-def combine_public_task_outputs(root: str | Path, results_dir: str | Path, logs_dir: str | Path = "logs") -> None:
-    root = Path(root)
-    results_dir = Path(results_dir)
-    logs_dir = Path(logs_dir)
-    ensure_dirs(results_dir, logs_dir)
-    csv_names = [
-        "public_uncertainty_validation.csv",
-        "public_uncertainty_seed_features.csv",
-        "stability_metrics.csv",
-        "stability_seed_features.csv",
-        "stability_runtime.csv",
-        "faithfulness_metrics.csv",
-        "training_size_uncertainty.csv",
-        "training_size_seed_features.csv",
-    ]
-    for name in csv_names:
-        frames = [read_csv_preserve_metadata(path) for path in root.rglob(f"results/{name}") if path.stat().st_size > 0]
-        if frames:
-            pd.concat(frames, ignore_index=True, sort=False).to_csv(results_dir / name, index=False, lineterminator="\n")
-
-    parquet_names = [
-        "public_uncertainty_local_explanations.parquet",
-        "stability_local_explanations.parquet",
-        "training_size_local_explanations.parquet",
-    ]
-    for name in parquet_names:
-        frames = []
-        for path in root.rglob(f"results/{name}"):
-            try:
-                frames.append(pd.read_parquet(path))
-            except Exception:
-                pass
-        for path in root.rglob(f"results/{name}.csv"):
-            frames.append(read_csv_preserve_metadata(path))
-        if frames:
-            pd.concat(frames, ignore_index=True, sort=False).to_parquet(results_dir / name, index=False)
-
-    for path in root.rglob("logs/*"):
-        if path.is_file():
-            artifact_name = path.parent.parent.name if path.parent.name == "logs" else path.parent.name
-            target = logs_dir / f"{artifact_name}-{path.name}"
-            shutil.copy2(path, target)
 
 
 def _hash_metadata(df: pd.DataFrame, logs_dir: Path) -> dict[str, object]:
@@ -197,12 +110,6 @@ def main() -> int:
     ensure_dirs(results_dir, figures_dir)
 
     df = _read_csvs(results_dir)
-    openml_path = results_dir / "openml_metrics.csv"
-    if openml_path.exists():
-        openml_metrics = read_csv_preserve_metadata(openml_path)
-        _openml_summary(openml_metrics, ["dataset_name", "task_id", "seed", "method"]).to_csv(results_dir / "openml_seed_summary.csv", index=False, lineterminator="\n")
-        _openml_summary(openml_metrics, ["dataset_name", "task_id", "method"]).to_csv(results_dir / "openml_global_summary.csv", index=False, lineterminator="\n")
-        _openml_summary(openml_metrics, ["method"]).to_csv(results_dir / "openml_method_summary.csv", index=False, lineterminator="\n")
     write_public_experiment_summaries(results_dir, figures_dir)
 
     metric = "combined_score" if "combined_score" in df.columns else "deletion_drop_auc"

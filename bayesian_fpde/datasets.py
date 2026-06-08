@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.datasets import load_breast_cancer, load_wine
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -188,24 +187,6 @@ def fit_black_box(X_train: np.ndarray, y_train: np.ndarray, *, seed: int = 0, mo
     model = RandomForestClassifier(n_estimators=100, random_state=seed, n_jobs=-1)
     model.fit(X_train, y_train)
     return model, "random_forest"
-
-
-def load_case_study_dataset(name: str):
-    key = name.lower().replace(" ", "_")
-    if key in {"breast_cancer", "breast_cancer_wisconsin"}:
-        data = load_breast_cancer(as_frame=True)
-    elif key == "wine":
-        data = load_wine(as_frame=True)
-    else:
-        try:
-            import openml
-
-            frame = openml.datasets.get_dataset(name).get_data(dataset_format="dataframe")[0]
-            target = frame.columns[-1]
-            return frame.drop(columns=[target]), frame[target], str(name)
-        except Exception as exc:
-            raise ValueError(f"case-study dataset is unavailable: {name}") from exc
-    return data.data, pd.Series(data.target), key
 
 
 def encode_labels(y: pd.Series | np.ndarray) -> np.ndarray:

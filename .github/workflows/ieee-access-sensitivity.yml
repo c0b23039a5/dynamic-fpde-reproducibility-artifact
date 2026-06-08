@@ -1,0 +1,109 @@
+name: IEEE Access Bayesian-FPDE sensitivity
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Sensitivity mode to run"
+        required: true
+        default: sensitivity_smoke
+        type: choice
+        options:
+          - sensitivity_smoke
+          - sensitivity_posterior
+          - sensitivity_lambda
+          - sensitivity_full
+      install_baselines:
+        description: "Install optional SHAP/LIME baselines"
+        required: true
+        default: false
+        type: boolean
+      run_tests:
+        description: "Run tests before sensitivity analysis"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ieee-access-bayesian-fpde-sensitivity-${{ github.ref }}-${{ inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  ieee-access-sensitivity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Bayesian-FPDE pipeline
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ inputs.install_baselines }}" = "true" ]; then
+            python -m pip install -e ".[dev,openml,baselines]"
+          else
+            python -m pip install -e ".[dev,openml]"
+          fi
+
+      - name: Check sensitivity config YAML
+        run: |
+          python - <<'PY'
+          import yaml
+          with open("configs/openml_public_ieee_access_sensitivity.yaml", "r", encoding="utf-8") as fh:
+              yaml.safe_load(fh)
+          PY
+
+      - name: Run tests
+        if: ${{ inputs.run_tests }}
+        run: |
+          python -m pytest
+
+      - name: Create sensitivity output directories
+        run: |
+          mkdir -p results_ieee_sensitivity figures_ieee_sensitivity logs_ieee_sensitivity
+
+      - name: Run IEEE Access sensitivity analysis
+        run: |
+          python experiments/run_sensitivity_analysis.py \
+            --config configs/openml_public_ieee_access_sensitivity.yaml \
+            --mode "${{ inputs.mode }}"
+
+      - name: Verify sensitivity outputs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          required = [
+              "results_ieee_sensitivity/sensitivity_results.csv",
+              "results_ieee_sensitivity/sensitivity_summary.csv",
+              "results_ieee_sensitivity/posterior_samples_sensitivity.csv",
+              "results_ieee_sensitivity/posterior_samples_sensitivity_summary.csv",
+              "results_ieee_sensitivity/lambda_hyb_sensitivity.csv",
+              "results_ieee_sensitivity/lambda_hyb_sensitivity_summary.csv",
+          ]
+          missing = [name for name in required if not Path(name).exists()]
+          if missing:
+              raise SystemExit(f"missing sensitivity outputs: {missing}")
+          PY
+
+      - name: Upload IEEE Access sensitivity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bayesian-fpde-ieee-access-sensitivity-${{ inputs.mode }}
+          path: |
+            results_ieee_sensitivity/
+            figures_ieee_sensitivity/
+            logs_ieee_sensitivity/
+            configs/openml_public_ieee_access_sensitivity.yaml
+          if-no-files-found: warn
+          retention-days: 14

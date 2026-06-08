@@ -486,3 +486,88 @@ def test_aggregate_marks_inconsistent_experiment_hashes(tmp_path: Path):
     assert set(summary["experiment_config_hash"]) == {"multiple"}
     assert set(summary["config_hash"]) == {"multiple"}
     assert (tmp_path / "logs" / "aggregate_results.log").exists()
+
+
+def test_sensitivity_analysis_local_two_seed_run(tmp_path: Path):
+    results = tmp_path / "results_ieee_sensitivity"
+    figures = tmp_path / "figures_ieee_sensitivity"
+    logs = tmp_path / "logs_ieee_sensitivity"
+    config = tmp_path / "openml_public_ieee_access_sensitivity_local.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                f"results_dir: {results.as_posix()}",
+                f"figures_dir: {figures.as_posix()}",
+                f"logs_dir: {logs.as_posix()}",
+                "posterior_samples: 100",
+                "bootstrap_samples: 10",
+                "lambda_hyb: 0.5",
+                "top_k: 3",
+                "tau: 0.0",
+                "uncertainty_methods:",
+                "  - bayesian_hyb_fpde",
+                "modes:",
+                "  sensitivity_posterior:",
+                "    local_smoke: true",
+                "    seeds: [0, 1]",
+                "    max_tasks: 1",
+                "    n_explain: 2",
+                "    posterior_samples_grid: [20, 40]",
+                "    lambda_hyb_grid: [0.5]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _run("experiments.run_sensitivity_analysis", "--config", str(config), "--mode", "sensitivity_posterior")
+
+    sensitivity = _csv(
+        str(results / "sensitivity_results.csv"),
+        REQUIRED_METADATA
+        | {
+            "sensitivity_type",
+            "posterior_samples",
+            "lambda_hyb",
+            "empirical_reference_coverage_95",
+            "mean_posterior_std",
+            "mean_ci_width",
+            "uncertainty_error_correlation",
+            "ci_width_error_correlation",
+            "mean_spearman_between_seeds",
+            "top_k_jaccard_between_seeds",
+            "attribution_distance_to_default",
+            "top_k_jaccard_to_default",
+            "sign_agreement_to_default",
+            "runtime_seconds",
+        },
+    )
+    posterior = _csv(
+        str(results / "posterior_samples_sensitivity.csv"),
+        REQUIRED_METADATA | {"sensitivity_type", "posterior_samples", "lambda_hyb", "runtime_seconds"},
+    )
+    posterior_summary = _csv(
+        str(results / "posterior_samples_sensitivity_summary.csv"),
+        {"sensitivity_type", "dataset_name", "method", "posterior_samples", "lambda_hyb", "n_rows", "n_seeds"},
+    )
+    lambda_csv = read_csv_preserve_metadata(results / "lambda_hyb_sensitivity.csv")
+    lambda_summary = read_csv_preserve_metadata(results / "lambda_hyb_sensitivity_summary.csv")
+
+    assert not sensitivity.empty
+    assert not posterior.empty
+    assert not posterior_summary.empty
+    assert (results / "sensitivity_seed_features.csv").exists()
+    assert (results / "sensitivity_local_explanations.parquet").exists() or (results / "sensitivity_local_explanations.parquet.csv").exists()
+    assert set(sensitivity["sensitivity_type"]) == {"posterior_samples"}
+    assert set(sensitivity["status"]).issubset({"ok", "skipped", "error"})
+    assert "ok" in set(sensitivity["status"])
+    assert set(sensitivity["posterior_samples"].astype(int)) == {20, 40}
+    assert set(sensitivity["lambda_hyb"].astype(float)) == {0.5}
+    assert sensitivity["mean_posterior_std"].notna().any()
+    assert sensitivity["mean_ci_width"].notna().any()
+    assert sensitivity["runtime_seconds"].notna().any()
+    assert sensitivity["mean_spearman_between_seeds"].notna().any()
+    assert sensitivity["top_k_jaccard_between_seeds"].notna().any()
+    assert posterior_summary["n_seeds"].astype(int).eq(2).all()
+    assert set(lambda_csv.columns).issuperset({"sensitivity_type", "posterior_samples", "lambda_hyb"})
+    assert set(lambda_summary.columns).issuperset({"sensitivity_type", "posterior_samples", "lambda_hyb"})

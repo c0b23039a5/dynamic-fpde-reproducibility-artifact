@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{Stability of feature rankings and signs across random seeds.}
+\label{tab:stability}
+\begin{tabular}{l r r r r}
+        \hline
+        Method & Spearman & Pearson & Top-k Jaccard & Sign agreement \\
+        \hline
+        Bayesian-FPDE & 0.900 & 0.961 & 0.896 & 0.876 \\
+        Bootstrap-FPDE & 0.901 & 0.960 & 0.896 & 0.878 \\
+        Hyb-FPDE & 0.915 & 0.961 & 0.896 & 0.880 \\
+        SHAP & 0.940 & 0.974 & 0.908 & 0.890 \\
+        LIME & 0.861 & 0.813 & 0.951 & 0.761 \\
+        \hline
+\end{tabular}
+\end{table}

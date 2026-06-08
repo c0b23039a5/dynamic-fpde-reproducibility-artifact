@@ -1,0 +1,25 @@
+\section{Results}
+
+\subsection{Public-Data Empirical Reference Coverage}
+
+Table~\ref{tab:uncertainty_validation} summarizes the uncertainty-validation results across the five public benchmark datasets in Table~\ref{tab:datasets}. Bayesian-FPDE achieved high empirical reference coverage on average, with mean empirical\_reference\_coverage\_95 of 0.945 against leave-one-seed empirical references. Bootstrap-FPDE produced a similar mean empirical\_reference\_coverage\_95 of 0.944. These values should be interpreted only as coverage against the empirical reference used in the experiment; the public benchmark datasets do not provide ground-truth feature attributions, so these results do not measure true attribution coverage or known-truth calibration.
+
+Per-dataset results in Table~\ref{tab:per_dataset_coverage} show that empirical reference coverage varied across datasets. The corresponding coverage and error-correlation behavior is visualized in Fig.~\ref{fig:public_uncertainty_empirical_reference_coverage} and Fig.~\ref{fig:public_uncertainty_error_correlation}. Bayesian-FPDE had a mean interval width of 0.120 and a mean posterior standard deviation of 0.031, giving uncertainty estimates that are comparable in scale to the bootstrap reference while retaining the Bayesian posterior summary.
+
+\subsection{Stability Across Random Seeds}
+
+Table~\ref{tab:stability} reports seed-to-seed stability metrics. Bayesian-FPDE produced relatively stable feature rankings across seeds, with mean Spearman correlation of 0.900, mean Pearson correlation of 0.961, mean top-k Jaccard overlap of 0.896, and mean sign agreement of 0.876. The boxplots in Fig.~\ref{fig:stability_spearman_boxplot} and Fig.~\ref{fig:stability_topk_jaccard_boxplot} provide the corresponding distributional view across public datasets.
+
+These stability results indicate that the uncertainty-aware Bayesian-FPDE procedure preserved consistent feature-ranking behavior under random-seed variation in this benchmark setting. They should not be read as evidence of ground-truth attribution accuracy, because the experiment compares repeated empirical estimates rather than known true explanations.
+
+\subsection{Training-Size Uncertainty Behavior}
+
+Table~\ref{tab:training_size} shows how Bayesian-FPDE uncertainty changed as the training fraction increased from 0.10 to 1.00. Mean posterior standard deviation decreased from 0.0949 at the 0.10 training fraction to 0.0308 at the full-training setting, and mean credible interval width decreased from 0.3696 to 0.1197. At the same time, attribution\_distance\_to\_full\_train decreased from 0.0525 to 0.0000, while top-k Jaccard overlap with the full-training empirical reference increased from 0.769 to 1.000.
+
+These trends, also shown in Fig.~\ref{fig:ci_width_vs_training_size} and Fig.~\ref{fig:distance_to_full_train_vs_training_size}, are consistent with narrower uncertainty intervals and smaller distances to the full-training empirical reference as more training data are used. The distance metric is a distance to the full-training empirical reference constructed in the experiment, not a distance to a true attribution.
+
+\subsection{Baseline-Dependent Faithfulness Evidence}
+
+Table~\ref{tab:faithfulness} reports baseline-dependent Faithfulness metrics. Bayesian-FPDE obtained a faithfulness correlation of 0.334, deletion AUC of 0.675, insertion AUC of 0.844, and combined score of 0.531. SHAP obtained the largest combined score in this aggregate table, while LIME and Bootstrap-FPDE were close to Bayesian-FPDE on the displayed combined score.
+
+These Faithfulness metrics are best treated as complementary model-output consistency evidence. They depend on the perturbation baseline and evaluation protocol, and they should not be interpreted as proof that Bayesian-FPDE outperforms SHAP or LIME. The deletion and insertion examples in Fig.~\ref{fig:deletion_curves_examples} and Fig.~\ref{fig:insertion_curves_examples} provide qualitative context for the aggregate Faithfulness results.

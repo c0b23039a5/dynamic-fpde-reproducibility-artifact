@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\caption{Sensitivity to the Hyb-FPDE mixing weight at posterior\_samples = 500.}
+\label{tab:lambda_sensitivity}
+\begin{tabular}{r r r r r r r r}
+        \hline
+        lambda\_hyb & empirical\_reference\_coverage\_95 & Mean posterior std. & Mean CI width & Spearman & Top-k Jaccard & Distance to default & Top-k Jaccard to default \\
+        \hline
+        0.25 & 0.946 & 0.0223 & 0.0867 & 0.885 & 0.896 & 0.0699 & 1.000 \\
+        0.50 & 0.945 & 0.0308 & 0.1197 & 0.900 & 0.896 & 0.0000 & 1.000 \\
+        0.75 & 0.950 & 0.0395 & 0.1537 & 0.898 & 0.883 & 0.0699 & 0.993 \\
+        \hline
+\end{tabular}
+\end{table}

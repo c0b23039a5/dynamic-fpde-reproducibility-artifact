@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Reproducibility artifact components for the IEEE Access experiments.}
+\label{tab:reproducibility_artifact}
+\begin{tabular}{l l l}
+        \hline
+        Component & Path & Purpose \\
+        \hline
+        Main config & configs/openml\_public\_ieee\_access.yaml & Main public-data experiment configuration \\
+        Sensitivity config & configs/openml\_public\_ieee\_access\_sensitivity.yaml & Sensitivity experiment configuration \\
+        Main workflow & .github/workflows/ieee-access-bayesian-fpde-experiments.yml & GitHub Actions workflow for main outputs \\
+        Sensitivity workflow & .github/workflows/ieee-access-sensitivity.yml & GitHub Actions workflow for sensitivity outputs \\
+        Main results & results\_ieee/ & Aggregate CSV outputs for main experiments \\
+        Sensitivity results & results\_ieee\_sensitivity/ & Aggregate CSV outputs for sensitivity analyses \\
+        Main figures & figures\_ieee/ & Figures generated from main results \\
+        Sensitivity figures & figures\_ieee\_sensitivity/ & Figures generated from sensitivity results \\
+        Logs & logs\_ieee/, logs\_ieee\_sensitivity/ & Workflow execution logs \\
+        \hline
+\end{tabular}
+\end{table}

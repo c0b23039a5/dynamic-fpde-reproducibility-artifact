@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{Faithfulness metrics are baseline-dependent and are used as complementary model-output consistency evidence.}
+\label{tab:faithfulness}
+\begin{tabular}{l r r r r}
+        \hline
+        Method & Faithfulness corr. & Deletion AUC & Insertion AUC & Combined score \\
+        \hline
+        Bayesian-FPDE & 0.334 & 0.675 & 0.844 & 0.531 \\
+        Bootstrap-FPDE & 0.306 & 0.675 & 0.844 & 0.532 \\
+        Hyb-FPDE & 0.374 & 0.674 & 0.846 & 0.533 \\
+        SHAP & 0.516 & 0.634 & 0.863 & 0.561 \\
+        LIME & 0.422 & 0.670 & 0.840 & 0.532 \\
+        \hline
+\end{tabular}
+\end{table}

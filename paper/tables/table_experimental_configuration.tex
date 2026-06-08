@@ -1,0 +1,24 @@
+\begin{table}[t]
+\centering
+\caption{Experimental configuration for the public-data IEEE Access artifact runs.}
+\label{tab:experimental_configuration}
+\begin{tabular}{l l}
+        \hline
+        Setting & Value \\
+        \hline
+        Datasets & 5 public benchmark datasets \\
+        Seeds & 0--9 \\
+        n\_explain & 50 \\
+        posterior\_samples & 500 \\
+        bootstrap\_samples & 50 \\
+        top\_k & 5 \\
+        lambda\_hyb & 0.5 \\
+        train\_fractions & \{0.10, 0.25, 0.50, 0.75, 1.00\} \\
+        max\_train\_rows & 2000 \\
+        max\_test\_rows & 500 \\
+        model & auto \\
+        main output directory & results\_ieee \\
+        sensitivity output directory & results\_ieee\_sensitivity \\
+        \hline
+\end{tabular}
+\end{table}

@@ -1,0 +1,13 @@
+\section{Sensitivity Analysis}
+
+\subsection{Sensitivity to Posterior Sample Size}
+
+Table~\ref{tab:posterior_sensitivity} reports the posterior-sample-size sensitivity analysis for posterior\_samples values of 100, 300, and 500 at lambda\_hyb = 0.5. Across this tested range, empirical\_reference\_coverage\_95 remained stable at 0.945, and top-k Jaccard overlap across seeds remained 0.896 after aggregation over the five public benchmark datasets. Mean posterior standard deviation was also stable, ranging from 0.0306 to 0.0308, while mean credible interval width increased slightly from 0.1153 to 0.1197.
+
+These results suggest that the reported empirical reference coverage and top-ranked feature overlap were not sensitive to the posterior sample count within the tested range. Fig.~\ref{fig:posterior_samples_mean_ci_width} shows the corresponding credible-interval-width trend. This conclusion is limited to the evaluated grid of posterior\_samples = \{100, 300, 500\}; it should not be generalized to substantially smaller or larger posterior sample sizes without additional experiments.
+
+\subsection{Sensitivity to the Hyb-FPDE Mixing Weight}
+
+Table~\ref{tab:lambda_sensitivity} reports the sensitivity analysis over lambda\_hyb values of 0.25, 0.50, and 0.75 at posterior\_samples = 500. Varying lambda\_hyb affected posterior standard deviations and credible interval widths: mean posterior standard deviation increased from 0.0223 at lambda\_hyb = 0.25 to 0.0395 at lambda\_hyb = 0.75, and mean credible interval width increased from 0.0867 to 0.1537 over the same range.
+
+Empirical reference coverage and top-ranked feature overlap remained broadly stable across the tested lambda\_hyb values. Mean empirical\_reference\_coverage\_95 ranged from 0.946 to 0.950, and top-k Jaccard overlap across seeds ranged from 0.883 to 0.896. Distance to the default lambda\_hyb = 0.5 setting was symmetric in the aggregate table for 0.25 and 0.75, while top-k Jaccard to the default remained high. Fig.~\ref{fig:lambda_hyb_distance_to_default} visualizes the distance-to-default behavior. These findings are restricted to the tested mixing-weight range and should not be overgeneralized beyond it.

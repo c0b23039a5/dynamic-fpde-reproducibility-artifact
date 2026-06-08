@@ -2,7 +2,7 @@ results_dir: results_ieee
 figures_dir: figures_ieee
 logs_dir: logs_ieee
 suite_id: 99
-task_ids: [31, 10101, 9946]
+task_ids: [31, 10101, 9946, 37, 10093]
 seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 fold: 0
 repeat: 0
@@ -42,8 +42,7 @@ modes:
     posterior_samples: 500
     bootstrap_samples: 50
     train_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]
-  # ieee_full is intended for 5 public OpenML tasks after explicitly adding
-  # two more task IDs to task_ids; with the current list it runs 3 tasks.
+  # ieee_full is the 5-dataset IEEE Access run over the explicit task_ids list.
   ieee_full:
     local_smoke: false
     max_tasks: 5

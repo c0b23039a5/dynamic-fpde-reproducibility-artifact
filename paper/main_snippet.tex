@@ -1,0 +1,35 @@
+% Integration snippet for IEEE Access paper materials.
+% Paste these inputs into the manuscript body in the order that fits the final narrative.
+
+% Dataset and configuration tables.
+\input{paper/tables/table_datasets}
+\input{paper/tables/table_experimental_configuration}
+
+% Main results narrative and supporting tables.
+\input{paper/sections/results_ieee_access}
+\input{paper/tables/table_uncertainty_validation}
+\input{paper/tables/table_per_dataset_coverage}
+\input{paper/tables/table_stability}
+\input{paper/tables/table_training_size}
+\input{paper/tables/table_faithfulness}
+
+% Main result figures referenced by the results section.
+\input{paper/figures/fig_public_uncertainty_coverage}
+\input{paper/figures/fig_public_uncertainty_error_correlation}
+\input{paper/figures/fig_stability_spearman}
+\input{paper/figures/fig_stability_topk_jaccard}
+\input{paper/figures/fig_ci_width_training_size}
+\input{paper/figures/fig_distance_to_full_train}
+\input{paper/figures/fig_deletion_curves_examples}
+\input{paper/figures/fig_insertion_curves_examples}
+
+% Sensitivity analysis narrative, tables, and figures.
+\input{paper/sections/sensitivity_analysis}
+\input{paper/tables/table_posterior_sensitivity}
+\input{paper/tables/table_lambda_sensitivity}
+\input{paper/figures/fig_posterior_samples_sensitivity}
+\input{paper/figures/fig_lambda_hyb_sensitivity}
+
+% Reproducibility artifact narrative and table.
+\input{paper/sections/reproducibility_artifact}
+\input{paper/tables/table_reproducibility_artifact}

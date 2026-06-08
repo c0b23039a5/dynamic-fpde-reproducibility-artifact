@@ -83,11 +83,20 @@ def fmt_int(value: object) -> str:
     return str(int(round(value_float)))
 
 
-def table_env(label: str, caption: str, column_spec: str, header: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
+def table_env(
+    label: str,
+    caption: str,
+    column_spec: str,
+    header: Sequence[str],
+    rows: Iterable[Sequence[str]],
+    *,
+    table_star: bool = False,
+) -> str:
+    env = "table*" if table_star else "table"
     body = ["        " + " & ".join(header) + LATEX_ROW_END, "        \\hline"]
     body.extend("        " + " & ".join(row) + LATEX_ROW_END for row in rows)
     return (
-        "\\begin{table}[t]\n"
+        f"\\begin{{{env}}}[t]\n"
         "\\centering\n"
         f"\\caption{{{caption}}}\n"
         f"\\label{{{label}}}\n"
@@ -96,7 +105,7 @@ def table_env(label: str, caption: str, column_spec: str, header: Sequence[str],
         + "\n".join(body)
         + "\n        \\hline\n"
         "\\end{tabular}\n"
-        "\\end{table}\n"
+        f"\\end{{{env}}}\n"
     )
 
 
@@ -104,6 +113,9 @@ def resolve_dir(explicit: Path | None, candidates: Sequence[Path], label: str) -
     if explicit is not None:
         if explicit.is_dir():
             return explicit
+        for candidate in candidates:
+            if candidate.name == explicit.name and candidate.is_dir():
+                return candidate
         raise FileNotFoundError(f"{label} directory does not exist: {explicit}")
     for candidate in candidates:
         if candidate.is_dir():
@@ -218,6 +230,7 @@ def make_uncertainty_validation_table(main_root: Path) -> str:
             "Mean posterior std.",
         ],
         rows,
+        table_star=True,
     )
 
 
@@ -249,6 +262,7 @@ def make_per_dataset_coverage_table(main_root: Path) -> str:
             "Bayesian-FPDE posterior std.",
         ],
         rows,
+        table_star=True,
     )
 
 
@@ -414,6 +428,7 @@ def make_lambda_sensitivity_table(sensitivity_root: Path) -> str:
             "Top-k Jaccard to default",
         ],
         rows,
+        table_star=True,
     )
 
 
@@ -435,6 +450,7 @@ def make_reproducibility_artifact_table() -> str:
         "l l l",
         ["Component", "Path", "Purpose"],
         rows,
+        table_star=True,
     )
 
 

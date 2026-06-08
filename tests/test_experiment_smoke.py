@@ -59,6 +59,73 @@ def test_ieee_access_workflow_config_is_the_public_experiment_source():
     assert cfg["modes"]["ieee_full"]["max_tasks"] == 5
 
 
+def test_faithfulness_passes_configured_bootstrap_samples(monkeypatch, tmp_path: Path):
+    import experiments.run_faithfulness as runner
+
+    cfg = {
+        "results_dir": str(tmp_path / "results"),
+        "figures_dir": str(tmp_path / "figures"),
+        "logs_dir": str(tmp_path / "logs"),
+        "mode": "ieee_min",
+        "seeds": [7],
+        "faithfulness_methods": ["bootstrap_fpde"],
+        "n_explain": 2,
+        "posterior_samples": 11,
+        "bootstrap_samples": 50,
+        "top_k": 3,
+        "lambda_hyb": 0.4,
+        "max_background": 9,
+    }
+    calls: list[tuple[str, int]] = []
+    hashes = {
+        "config_hash": "config",
+        "experiment_config_hash": "experiment",
+        "workflow_run_id": "run",
+        "workflow_run_attempt": "1",
+        "workflow_name": "workflow",
+        "workflow_ref": "ref",
+        "workflow_sha": "sha",
+        "runner_invocation_hash": "runner",
+        "run_config_hash": "run-config",
+        "job_config_hash": "job",
+    }
+
+    class Logger:
+        def info(self, *args, **kwargs):
+            return None
+
+    def fake_hashes_for_job(*args, **kwargs):
+        calls.append(("hash", kwargs["bootstrap_samples"]))
+        return hashes
+
+    def fake_evaluate_methods_for_dataset(*args, **kwargs):
+        calls.append(("evaluate", kwargs["bootstrap_samples"]))
+        metrics = pd.DataFrame(
+            [
+                {
+                    "method": "bootstrap_fpde",
+                    "explained_order": 0,
+                    "deletion_auc": 0.1,
+                    "insertion_auc": 0.2,
+                }
+            ]
+        )
+        return pd.DataFrame(), metrics, pd.DataFrame()
+
+    payload = ("dummy", "X_train", "y_train", "X_test", "y_test", "model", ["x0"], "model_name")
+    monkeypatch.setattr(sys, "argv", ["run_faithfulness.py", "--config", "config.yml", "--mode", "ieee_min"])
+    monkeypatch.setattr(runner, "load_mode_config", lambda *args, **kwargs: dict(cfg))
+    monkeypatch.setattr(runner, "apply_task_id_filter", lambda loaded_cfg, task_id: loaded_cfg)
+    monkeypatch.setattr(runner, "setup_logging", lambda *args, **kwargs: Logger())
+    monkeypatch.setattr(runner, "load_tabular_openml_or_local", lambda *args, **kwargs: [("", payload, "local_smoke")])
+    monkeypatch.setattr(runner, "config_hashes_for_job", fake_hashes_for_job)
+    monkeypatch.setattr(runner, "evaluate_methods_for_dataset", fake_evaluate_methods_for_dataset)
+    monkeypatch.setattr(runner, "save_line_plot", lambda *args, **kwargs: None)
+
+    assert runner.main() == 0
+    assert calls == [("hash", 50), ("evaluate", 50)]
+
+
 def test_public_experiments_and_aggregate_on_local_ieee_shape(tmp_path: Path):
     results = tmp_path / "results_ieee"
     figures = tmp_path / "figures_ieee"

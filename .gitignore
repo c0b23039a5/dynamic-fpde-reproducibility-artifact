@@ -37,3 +37,5 @@ Thumbs.db
 # Editors
 .vscode/
 .idea/
+
+*.egg-info/

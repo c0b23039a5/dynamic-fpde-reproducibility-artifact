@@ -92,7 +92,7 @@ results_ieee_sensitivity/sensitivity_summary.csv
 ## Metric interpretation
 
 - `empirical_reference_coverage_95` is coverage against a leave-one-seed empirical reference, not true attribution coverage.
-- `attribution_distance_to_full_train` is distance to a full-training empirical reference, not distance to a true attribution.
+- `attribution_distance_to_full_train` is measured against the full-training empirical reference used in the experiment, not against a true attribution. When `max_train_rows` or `max_test_rows` is applied, this means the capped experimental training subset, not necessarily the entire original OpenML dataset.
 - Faithfulness metrics depend on the chosen baseline. The shared evaluation path currently uses the training-set mean as the baseline.
 
 ## Citation

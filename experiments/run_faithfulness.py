@@ -24,6 +24,7 @@ def main() -> int:
             dataset_name, X_train, y_train, X_test, y_test, model, feature_names, _ = payload
             n_explain = int(cfg.get("n_explain", 20))
             posterior_samples = int(cfg.get("posterior_samples", 100))
+            bootstrap_samples = int(cfg.get("bootstrap_samples", 30))
             top_k = int(cfg.get("top_k", 5))
             lambda_hyb = float(cfg.get("lambda_hyb", 0.5))
             max_background = int(cfg.get("max_background", 100))
@@ -37,6 +38,7 @@ def main() -> int:
                 methods=methods,
                 n_explain=n_explain,
                 posterior_samples=posterior_samples,
+                bootstrap_samples=bootstrap_samples,
                 top_k=top_k,
                 lambda_hyb=lambda_hyb,
                 max_background=max_background,
@@ -55,6 +57,7 @@ def main() -> int:
                 fold=split_name,
                 n_explain=n_explain,
                 posterior_samples=posterior_samples,
+                bootstrap_samples=bootstrap_samples,
                 top_k=top_k,
                 lambda_hyb=lambda_hyb,
                 mode=str(cfg.get("mode", "")),

@@ -125,6 +125,16 @@ def true_fpde_attribution(
     lambda_hyb: float = 0.5,
     anchor: Optional[np.ndarray] = None,
 ) -> np.ndarray:
+    """Compute FPDE attribution against explicitly provided reference prototypes.
+
+    This helper is intended for synthetic or controlled settings where reference
+    prototypes are available. It must not be interpreted as evidence of true
+    attribution coverage for public benchmark datasets. The public-data IEEE
+    Access experiments use empirical_reference_coverage_95 against
+    leave-one-seed empirical references instead of ground-truth attribution
+    coverage.
+    """
+
     return fpde_attribution(
         x,
         true_prototypes,

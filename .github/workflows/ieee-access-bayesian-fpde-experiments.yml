@@ -41,7 +41,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: "3.12"
           cache: "pip"
 
       - name: Install Bayesian-FPDE pipeline
@@ -55,7 +55,6 @@ jobs:
 
       - name: Run tests
         if: ${{ inputs.run_tests }}
-        continue-on-error: true
         run: |
           python -m pytest
 

@@ -30,6 +30,16 @@ For OpenML and optional baselines:
 python -m pip install -e .[dev,openml,baselines]
 ```
 
+For the Dynamic-FPDE audio experiment suite, this artifact installs FPDE from
+the `dynamic` branch of `fpde-xai/fpde`:
+
+```bash
+python -m pip install -e ".[dev,dynamic-audio]"
+```
+
+See `docs/dynamic_fpde_experiments.md` for the ESC-50 runner, output files,
+metric definitions, and interpretation limits.
+
 ## IEEE Access public-data configuration
 
 ```text

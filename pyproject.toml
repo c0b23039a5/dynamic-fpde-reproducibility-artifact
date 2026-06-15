@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Reproducible Bayesian-FPDE experimental pipeline for uncertainty-aware prototype-contrast attributions."
 requires-python = ">=3.12"
 dependencies = [
+  "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic",
   "numpy",
   "pandas",
   "scikit-learn",
@@ -32,6 +33,10 @@ baselines = [
   "aime-xai",
   "umap-learn",
   "seaborn",
+]
+dynamic-audio = [
+  "librosa",
+  "soundfile",
 ]
 
 [tool.setuptools.packages.find]

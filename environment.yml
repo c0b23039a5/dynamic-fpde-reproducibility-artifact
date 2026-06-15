@@ -15,7 +15,7 @@ dependencies:
   - umap-learn
   - seaborn
   - pip:
-      - fpde @ git+https://github.com/fpde-xai/fpde.git
+      - fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic
       - lightgbm
       - openml
       - shap
@@ -23,3 +23,5 @@ dependencies:
       - aime-xai
       - pytest
       - pyarrow
+      - librosa
+      - soundfile

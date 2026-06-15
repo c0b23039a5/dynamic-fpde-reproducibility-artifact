@@ -1,0 +1,9 @@
+{
+  "fpde": "0.1.0",
+  "librosa": "0.11.0",
+  "numpy": "2.4.6",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.14.4 (main, Apr 14 2026, 14:30:57) [MSC v.1944 64 bit (AMD64)]",
+  "seed": 0,
+  "soundfile": "0.14.0"
+}

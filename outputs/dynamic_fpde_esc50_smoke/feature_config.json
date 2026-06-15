@@ -1,0 +1,11 @@
+{
+  "feature_config": {
+    "hop_length": 512,
+    "n_fft": 2048,
+    "n_mfcc": 13,
+    "sr": 22050
+  },
+  "feature_set": "rms, zcr, spectral centroid, bandwidth, rolloff, flatness, MFCC 1..n_mfcc",
+  "input_space": "frame-level acoustic features, not raw waveform samples",
+  "non_finite_policy": "np.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)"
+}

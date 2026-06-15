@@ -1,0 +1,4 @@
+dataset,fold,method,abs_exactness_residual_mean,abs_exactness_residual_std,abs_exactness_residual_median,n
+esc50,1,dynamic_cos,0.0,0.0,0.0,10
+esc50,1,dynamic_diff,0.0,0.0,0.0,10
+esc50,1,dynamic_hyb,0.0,0.0,0.0,10

@@ -39,3 +39,6 @@ Thumbs.db
 .idea/
 
 *.egg-info/
+
+ESC-50/
+uv.lock

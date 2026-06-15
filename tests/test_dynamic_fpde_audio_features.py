@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from experiments.dynamic_fpde_audio.baselines import energy_frame_scores, random_frame_scores
+from experiments.dynamic_fpde_audio.baselines import energy_frame_scores, frame_norm_scores, random_frame_scores
 from experiments.dynamic_fpde_audio.features import extract_frame_features, fit_standardizer, transform_features
 
 
@@ -31,6 +31,12 @@ def test_energy_baseline_ranks_larger_acoustic_feature_norm_first():
     order = np.argsort(scores)[::-1]
 
     assert order.tolist() == [1, 2, 0]
+
+
+def test_energy_frame_scores_aliases_frame_norm_scores():
+    X = np.array([[0.2, 0.0], [0.6, 0.8], [0.4, 0.1]], dtype=float)
+
+    np.testing.assert_allclose(energy_frame_scores(X), frame_norm_scores(X))
 
 
 def test_random_baseline_is_deterministic_for_seed_and_repetition():

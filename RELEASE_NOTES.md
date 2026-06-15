@@ -13,8 +13,12 @@
   musical-section alignment.
 - Batch CUDA attribution over all resolved test samples that naturally share
   the same `(T, F)` while keeping diagnostics on CPU.
-- Split runtime reporting into Native-Time FPDE, diagnostic, and total runtime
-  columns.
+- Keep CUDA Dynamic-Hyb diff, cosine, and hybrid attribution arrays on GPU
+  until final materialization.
+- Split runtime reporting into shared common-rival selection, Native-Time FPDE,
+  diagnostic, and total runtime columns.
+- Rename norm ranking helpers around `frame_norm_scores` while retaining
+  `energy_frame_scores` as a backward-compatible alias.
 - Clarify that sub-frame zero padding is an intra-clip analysis-frame guard,
   not fixed-length temporal alignment or CUDA batch padding.
 

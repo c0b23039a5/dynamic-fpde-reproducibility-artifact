@@ -194,9 +194,16 @@ Sample rows include Native-Time-specific checks and metadata:
 
 Runtime columns are split into:
 
+- `selection_runtime_sec`, the shared common-rival selection time for the
+  sample. It is repeated on every method row for that sample because the
+  selected target/rival pair is shared by all Dynamic-FPDE methods and ranking
+  diagnostics.
 - `native_fpde_runtime_sec`, the Native-Time attribution computation time
+  (`native_fpde_runtime_sec` is baseline ranking construction time for ranking
+  diagnostics)
 - `diagnostic_runtime_sec`, the CPU prototype-evidence diagnostic time
-- `total_runtime_sec`, their sum
+- `total_runtime_sec`, `selection_runtime_sec + native_fpde_runtime_sec +
+  diagnostic_runtime_sec`
 - `runtime_sec`, retained as a compatibility alias for `total_runtime_sec`
 
 Before rows are written, the runner checks that `Phi.shape == X.shape`,
@@ -237,7 +244,10 @@ Generated tables use Native-Time terminology:
 `feature_norm_baseline_standardized` ranks native frames by standardized
 feature-vector norm. Neither is an FPDE attribution method or attribution
 evidence; both are ranking baselines evaluated with the common prototype
-evidence diagnostic.
+evidence diagnostic. Internally these use `raw_feature_norm_scores` and
+`standardized_feature_norm_scores`; the lower-level helper is
+`frame_norm_scores`, with `energy_frame_scores` retained only as a
+backward-compatible alias.
 
 `table_dynamic_fpde_native_time_checks.tex` reports shape preservation,
 prototype metadata availability, and additivity residuals.

@@ -1,12 +1,12 @@
-"""Time-ranking baselines for Native-Time Dynamic-FPDE audio experiments."""
+"""Frame-ranking baselines for Native-Time Dynamic-FPDE audio experiments."""
 
 from __future__ import annotations
 
 import numpy as np
 
 
-def energy_frame_scores(matrix: np.ndarray, feature_names: object | None = None) -> np.ndarray:
-    """Rank acoustic frames by simple feature energy.
+def frame_norm_scores(matrix: np.ndarray, feature_names: object | None = None) -> np.ndarray:
+    """Rank frames by feature-vector norm.
 
     ``feature_names`` is accepted for compatibility with older call sites but
     is not used.
@@ -16,6 +16,24 @@ def energy_frame_scores(matrix: np.ndarray, feature_names: object | None = None)
     if X.ndim != 2:
         raise ValueError("matrix must be 2D")
     return np.linalg.norm(X, axis=1).astype(float, copy=True)
+
+
+def raw_feature_norm_scores(matrix: np.ndarray, feature_names: object | None = None) -> np.ndarray:
+    """Rank raw acoustic feature frames by vector norm."""
+
+    return frame_norm_scores(matrix, feature_names)
+
+
+def standardized_feature_norm_scores(matrix: np.ndarray, feature_names: object | None = None) -> np.ndarray:
+    """Rank standardized acoustic feature frames by vector norm."""
+
+    return frame_norm_scores(matrix, feature_names)
+
+
+def energy_frame_scores(matrix: np.ndarray, feature_names: object | None = None) -> np.ndarray:
+    """Backward-compatible alias for ``frame_norm_scores``."""
+
+    return frame_norm_scores(matrix, feature_names)
 
 
 def random_frame_scores(n_frames: int, *, seed: int, repetition: int = 0) -> np.ndarray:

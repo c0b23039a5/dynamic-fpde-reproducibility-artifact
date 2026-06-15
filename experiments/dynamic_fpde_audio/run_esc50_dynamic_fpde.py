@@ -22,7 +22,7 @@ from experiments.dynamic_fpde_audio.aggregate import (
     positive_margin_rows,
     write_csv,
 )
-from experiments.dynamic_fpde_audio.baselines import energy_frame_scores, random_frame_scores
+from experiments.dynamic_fpde_audio.baselines import random_frame_scores, raw_feature_norm_scores, standardized_feature_norm_scores
 from experiments.dynamic_fpde_audio.datasets import (
     ESCSample,
     get_mode_config,
@@ -77,6 +77,7 @@ SAMPLE_FIELDS = [
     "insertion_gain_auc",
     "combined_score",
     "runtime_sec",
+    "selection_runtime_sec",
     "native_fpde_runtime_sec",
     "diagnostic_runtime_sec",
     "total_runtime_sec",
@@ -342,7 +343,7 @@ def _explain_one_cpu(
     )
 
 
-def _native_diff_fpde_cuda(X_batch: np.ndarray, target_batch: np.ndarray, rival_batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _native_diff_fpde_cuda_arrays(X_batch: np.ndarray, target_batch: np.ndarray, rival_batch: np.ndarray) -> tuple[Any, Any]:
     import cupy as cp  # type: ignore[import-not-found]
 
     X_gpu = cp.asarray(X_batch, dtype=cp.float64)
@@ -350,10 +351,17 @@ def _native_diff_fpde_cuda(X_batch: np.ndarray, target_batch: np.ndarray, rival_
     rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)[:, None, :]
     attrs = (X_gpu - rival_gpu) ** 2 - (X_gpu - target_gpu) ** 2
     evidences = cp.sum(attrs, axis=(1, 2))
+    return attrs, evidences
+
+
+def _native_diff_fpde_cuda(X_batch: np.ndarray, target_batch: np.ndarray, rival_batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    attrs, evidences = _native_diff_fpde_cuda_arrays(X_batch, target_batch, rival_batch)
     return cp.asnumpy(attrs), cp.asnumpy(evidences)
 
 
-def _native_cos_fpde_cuda(
+def _native_cos_fpde_cuda_arrays(
     X_batch: np.ndarray,
     target_batch: np.ndarray,
     rival_batch: np.ndarray,
@@ -376,6 +384,20 @@ def _native_cos_fpde_cuda(
     attrs = (z * q_target[:, None, :]) / ((z_norm + float(eps)) * (target_norm + float(eps)))
     attrs -= (z * q_rival[:, None, :]) / ((z_norm + float(eps)) * (rival_norm + float(eps)))
     evidences = cp.sum(attrs, axis=(1, 2))
+    return attrs, evidences
+
+
+def _native_cos_fpde_cuda(
+    X_batch: np.ndarray,
+    target_batch: np.ndarray,
+    rival_batch: np.ndarray,
+    anchor_batch: np.ndarray,
+    *,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    attrs, evidences = _native_cos_fpde_cuda_arrays(X_batch, target_batch, rival_batch, anchor_batch, eps=eps)
     return cp.asnumpy(attrs), cp.asnumpy(evidences)
 
 
@@ -391,10 +413,8 @@ def _native_hyb_fpde_cuda(
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     import cupy as cp  # type: ignore[import-not-found]
 
-    diff_attr, diff_evidence = _native_diff_fpde_cuda(X_batch, target_batch, rival_batch)
-    cos_attr, cos_evidence = _native_cos_fpde_cuda(X_batch, target_batch, rival_batch, anchor_batch, eps=eps)
-    diff_gpu = cp.asarray(diff_attr, dtype=cp.float64)
-    cos_gpu = cp.asarray(cos_attr, dtype=cp.float64)
+    diff_gpu, diff_evidence = _native_diff_fpde_cuda_arrays(X_batch, target_batch, rival_batch)
+    cos_gpu, cos_evidence = _native_cos_fpde_cuda_arrays(X_batch, target_batch, rival_batch, anchor_batch, eps=eps)
     if normalize == "l1":
         diff_scale = cp.sum(cp.abs(diff_gpu), axis=(1, 2), keepdims=True) + float(eps)
         cos_scale = cp.sum(cp.abs(cos_gpu), axis=(1, 2), keepdims=True) + float(eps)
@@ -413,8 +433,8 @@ def _native_hyb_fpde_cuda(
         cp.asnumpy(attrs),
         cp.asnumpy(evidences),
         {
-            "diff_evidence": np.asarray(diff_evidence, dtype=float),
-            "cos_evidence": np.asarray(cos_evidence, dtype=float),
+            "diff_evidence": cp.asnumpy(diff_evidence),
+            "cos_evidence": cp.asnumpy(cos_evidence),
             "diff_scale": cp.asnumpy(diff_scale.reshape(-1)),
             "cos_scale": cp.asnumpy(cos_scale.reshape(-1)),
         },
@@ -604,6 +624,7 @@ def _row_from_result(
     explanation: Any,
     selection_explanation: Any,
     curves: dict[str, Any],
+    selection_runtime_sec: float,
     native_fpde_runtime_sec: float,
     diagnostic_runtime_sec: float,
     random_repetition: int | str = "",
@@ -616,7 +637,7 @@ def _row_from_result(
     evidence_role = "evaluation_margin" if _is_ranking_baseline(method) else "explanation_margin"
     target_meta = item.target_metadata
     rival_meta = item.rival_metadata
-    total_runtime_sec = float(native_fpde_runtime_sec) + float(diagnostic_runtime_sec)
+    total_runtime_sec = float(selection_runtime_sec) + float(native_fpde_runtime_sec) + float(diagnostic_runtime_sec)
     row = {
         "dataset": "esc50",
         "fold": int(fold),
@@ -647,6 +668,7 @@ def _row_from_result(
         "insertion_gain_auc": float(curves["insertion_gain_auc"]),
         "combined_score": float(curves["combined_score"]),
         "runtime_sec": total_runtime_sec,
+        "selection_runtime_sec": float(selection_runtime_sec),
         "native_fpde_runtime_sec": float(native_fpde_runtime_sec),
         "diagnostic_runtime_sec": float(diagnostic_runtime_sec),
         "total_runtime_sec": total_runtime_sec,
@@ -932,7 +954,7 @@ def run_fold(
 
     for item in items:
         sample = item.sample
-        selection_explanation = selection_results[sample.sample_id][0]
+        selection_explanation, selection_runtime = selection_results[sample.sample_id]
 
         for method, fpde_mode in (("dynamic_diff", "dynamic_diff"), ("dynamic_cos", "dynamic_cos"), ("dynamic_hyb", "dynamic_hyb")):
             explanation, native_runtime = fpde_results[(sample.sample_id, method)]
@@ -953,14 +975,15 @@ def run_fold(
                     explanation=explanation,
                     selection_explanation=selection_explanation,
                     curves=curves,
+                    selection_runtime_sec=selection_runtime,
                     native_fpde_runtime_sec=native_runtime,
                     diagnostic_runtime_sec=diagnostic_runtime,
                 )
             )
 
         for method, scores_iter in (
-            ("energy_baseline_raw", [energy_frame_scores(feature_map[sample.sample_id], feature_names)]),
-            ("feature_norm_baseline_standardized", [energy_frame_scores(item.X, feature_names)]),
+            ("energy_baseline_raw", [raw_feature_norm_scores(feature_map[sample.sample_id], feature_names)]),
+            ("feature_norm_baseline_standardized", [standardized_feature_norm_scores(item.X, feature_names)]),
             (
                 "random_baseline",
                 [
@@ -997,6 +1020,7 @@ def run_fold(
                         explanation=explanation,
                         selection_explanation=selection_explanation,
                         curves=curves,
+                        selection_runtime_sec=selection_runtime,
                         native_fpde_runtime_sec=native_runtime,
                         diagnostic_runtime_sec=diagnostic_runtime,
                         random_repetition=repetition if method == "random_baseline" else "",

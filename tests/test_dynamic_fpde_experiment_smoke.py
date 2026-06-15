@@ -139,29 +139,151 @@ def test_cuda_backend_uses_native_time_without_padding_or_resampling(monkeypatch
     ]
 
     for mode in ("dynamic_diff", "dynamic_cos", "dynamic_hyb"):
-        cpu = {
-            item.sample.sample_id: (
-                _explain_one_cpu(
-                    api,
-                    item,
-                    mode=mode,
-                    lambda_hyb=0.35,
-                    normalize="none",
-                    feature_names=["a", "b"],
-                    feature_config=types.SimpleNamespace(frame_time_sec=lambda i: float(i)),
-                ),
-                0.0,
-            )
-            for item in resolved
-        }
-        cuda = _explain_batch_cuda(api, resolved, mode=mode, lambda_hyb=0.35, normalize="none")
+        normalizations = ("none", "l1") if mode == "dynamic_hyb" else ("none",)
+        for normalize in normalizations:
+            cpu = {
+                item.sample.sample_id: (
+                    _explain_one_cpu(
+                        api,
+                        item,
+                        mode=mode,
+                        lambda_hyb=0.35,
+                        normalize=normalize,
+                        feature_names=["a", "b"],
+                        feature_config=types.SimpleNamespace(frame_time_sec=lambda i: float(i)),
+                    ),
+                    0.0,
+                )
+                for item in resolved
+            }
+            cuda = _explain_batch_cuda(api, resolved, mode=mode, lambda_hyb=0.35, normalize=normalize)
 
-        for sample in samples:
-            cpu_explanation = cpu[sample.sample_id][0]
-            cuda_explanation = cuda[sample.sample_id][0]
-            np.testing.assert_allclose(cuda_explanation.attributions, cpu_explanation.attributions, rtol=1e-8, atol=1e-10)
-            assert cuda_explanation.evidence == pytest.approx(cpu_explanation.evidence, rel=1e-8, abs=1e-10)
-            assert cuda_explanation.rival_label == cpu_explanation.rival_label
+            for sample in samples:
+                cpu_explanation = cpu[sample.sample_id][0]
+                cuda_explanation = cuda[sample.sample_id][0]
+                np.testing.assert_allclose(cuda_explanation.attributions, cpu_explanation.attributions, rtol=1e-8, atol=1e-10)
+                assert cuda_explanation.evidence == pytest.approx(cpu_explanation.evidence, rel=1e-8, abs=1e-10)
+                assert cuda_explanation.rival_label == cpu_explanation.rival_label
+
+
+def test_cuda_hyb_gpu_path_avoids_numpy_roundtrip_in_source():
+    import inspect
+
+    from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import _native_hyb_fpde_cuda
+
+    source = inspect.getsource(_native_hyb_fpde_cuda)
+
+    assert "_native_diff_fpde_cuda(" not in source
+    assert "_native_cos_fpde_cuda(" not in source
+    assert "cp.asarray(diff_attr" not in source
+    assert "cp.asarray(cos_attr" not in source
+
+
+def test_main_runner_cuda_uses_variable_length_many_item_batches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from experiments.dynamic_fpde_audio import run_esc50_dynamic_fpde as runner
+    from experiments.dynamic_fpde_audio.datasets import ESCSample
+    from experiments.dynamic_fpde_audio.features import FeatureConfig
+
+    class FakeExplanation:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    fake_api = types.SimpleNamespace(NativeTimeDynamicFPDEExplanation=FakeExplanation)
+    samples = [
+        ESCSample("train_a_2", Path("train_a_2.wav"), "train_a_2.wav", 2, "class_a"),
+        ESCSample("train_a_3", Path("train_a_3.wav"), "train_a_3.wav", 3, "class_a"),
+        ESCSample("train_b_2", Path("train_b_2.wav"), "train_b_2.wav", 2, "class_b"),
+        ESCSample("train_b_3", Path("train_b_3.wav"), "train_b_3.wav", 3, "class_b"),
+        ESCSample("test_a_short", Path("test_a_short.wav"), "test_a_short.wav", 1, "class_a"),
+        ESCSample("test_a_long", Path("test_a_long.wav"), "test_a_long.wav", 1, "class_a"),
+        ESCSample("test_b_mid", Path("test_b_mid.wav"), "test_b_mid.wav", 1, "class_b"),
+    ]
+    feature_map = {
+        "train_a_2": np.array([[0.0, 0.1], [0.1, 0.2], [0.2, 0.3]], dtype=float),
+        "train_a_3": np.array([[0.2, 0.1], [0.3, 0.2], [0.4, 0.3], [0.5, 0.4]], dtype=float),
+        "train_b_2": np.array([[1.0, 0.9], [0.9, 0.8], [0.8, 0.7]], dtype=float),
+        "train_b_3": np.array([[1.1, 0.8], [1.0, 0.7], [0.9, 0.6], [0.8, 0.5]], dtype=float),
+        "test_a_long": np.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.4], [0.4, 0.5], [0.5, 0.6]], dtype=float),
+        "test_a_short": np.array([[0.1, 0.2], [0.2, 0.3]], dtype=float),
+        "test_b_mid": np.array([[1.0, 0.7], [0.9, 0.6], [0.8, 0.5]], dtype=float),
+    }
+    calls: list[dict[str, object]] = []
+
+    def fake_load_feature_map(all_samples, **_kwargs):
+        return {sample.sample_id: feature_map[sample.sample_id] for sample in all_samples}, ["f0", "f1"], []
+
+    def fake_select_lambda(*_args, **_kwargs):
+        return 0.5, []
+
+    def fake_explain_many_cuda(api, items, *, mode, lambda_hyb, normalize):
+        calls.append(
+            {
+                "mode": mode,
+                "is_list": isinstance(items, list),
+                "is_ndarray": isinstance(items, np.ndarray),
+                "n": len(items),
+                "shapes": [tuple(item.X.shape) for item in items],
+            }
+        )
+        out = {}
+        for item in items:
+            scale = {"dynamic_diff": 0.05, "dynamic_cos": 0.04, "dynamic_hyb": 0.045}[mode]
+            attributions = np.full_like(item.X, scale, dtype=float)
+            evidence = float(np.sum(attributions))
+            out[item.sample.sample_id] = (
+                api.NativeTimeDynamicFPDEExplanation(
+                    mode=mode,
+                    evidence=evidence,
+                    attributions=attributions,
+                    time_importance=np.sum(attributions, axis=1),
+                    feature_importance=np.sum(attributions, axis=0),
+                    positive_score=evidence,
+                    negative_score=0.0,
+                    target_label=item.target_label,
+                    rival_label=item.rival_label,
+                    exactness_residual=0.0,
+                    details={"fake_cuda": True},
+                ),
+                0.125,
+            )
+        return out
+
+    monkeypatch.setattr(runner, "_require_native_fpde", lambda: fake_api)
+    monkeypatch.setattr(runner, "_ensure_backend", lambda backend: None)
+    monkeypatch.setattr(runner, "_load_feature_map", fake_load_feature_map)
+    monkeypatch.setattr(runner, "_select_lambda", fake_select_lambda)
+    monkeypatch.setattr(runner, "_explain_many_cuda", fake_explain_many_cuda)
+
+    rows, _lambda_rows, errors = runner.run_fold(
+        samples,
+        fold=1,
+        output_dir=tmp_path,
+        mode="smoke",
+        seed=11,
+        lambda_hyb=0.5,
+        lambda_grid=None,
+        feature_config=FeatureConfig(target_sr=1000, frame_length=16, hop_length=4),
+        prototype_mode="exemplar",
+        prototype_selection="nearest_to_class_centroid_frame",
+        anchor="zero",
+        normalize="none",
+        skip_errors=False,
+        steps=2,
+        random_repetitions=1,
+        backend="cuda",
+        make_figures=False,
+    )
+
+    assert errors == []
+    assert rows
+    method_calls = calls[1:]
+    assert [call["mode"] for call in method_calls] == ["dynamic_diff", "dynamic_cos", "dynamic_hyb"]
+    for call in method_calls:
+        assert call["is_list"] is True
+        assert call["is_ndarray"] is False
+        assert call["n"] == 3
+        assert len(set(call["shapes"])) > 1
+    assert any(tuple(shape) == (5, 2) for call in method_calls for shape in call["shapes"])
 
 
 def test_gitignore_excludes_dynamic_audio_feature_cache_paths():
@@ -294,6 +416,7 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "rival_prototype_source_sample_id",
         "prototype_mode",
         "prototype_selection_rule",
+        "selection_runtime_sec",
         "native_fpde_runtime_sec",
         "diagnostic_runtime_sec",
         "total_runtime_sec",
@@ -323,8 +446,15 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
     assert {row["prototype_mode"] for row in rows} == {"selected_exemplar"}
     for row in rows:
         assert float(row["runtime_sec"]) == pytest.approx(float(row["total_runtime_sec"]))
+        assert float(row["total_runtime_sec"]) == pytest.approx(
+            float(row["selection_runtime_sec"]) + float(row["native_fpde_runtime_sec"]) + float(row["diagnostic_runtime_sec"])
+        )
+        assert float(row["selection_runtime_sec"]) >= 0.0
         assert float(row["native_fpde_runtime_sec"]) >= 0.0
         assert float(row["diagnostic_runtime_sec"]) >= 0.0
+    for sample_id in {row["sample_id"] for row in rows}:
+        sample_group = [row for row in rows if row["sample_id"] == sample_id]
+        assert len({row["selection_runtime_sec"] for row in sample_group}) == 1
     for sample_id in {row["sample_id"] for row in rows}:
         sample_group = [row for row in rows if row["sample_id"] == sample_id]
         assert len({row["target_label"] for row in sample_group}) == 1

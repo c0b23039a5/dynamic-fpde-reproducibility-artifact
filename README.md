@@ -111,8 +111,15 @@ Feature caches under `outputs/**/cache/features/` are ignored by default
 because they are derived from ESC-50 audio.
 
 `dynamic_fpde_sample_metrics.csv` keeps `runtime_sec` as a compatibility alias
-for `total_runtime_sec`. It also reports `native_fpde_runtime_sec` and
-`diagnostic_runtime_sec` separately.
+for `total_runtime_sec`. Runtime accounting is:
+
+- `selection_runtime_sec`: shared target/rival selection time for the sample,
+  repeated on each method row that uses the same common rival
+- `native_fpde_runtime_sec`: Native-Time attribution tensor computation time,
+  or baseline ranking construction time for ranking baselines
+- `diagnostic_runtime_sec`: CPU prototype-evidence diagnostic time
+- `total_runtime_sec`: `selection_runtime_sec + native_fpde_runtime_sec +
+  diagnostic_runtime_sec`
 
 ## Interpretation Limits
 
@@ -129,7 +136,9 @@ careful interpretation. Prototype frames are auditable through
 
 The runner includes ranking baselines named `energy_baseline_raw`,
 `feature_norm_baseline_standardized`, and `random_baseline`. They are frame
-ranking diagnostics, not FPDE attribution methods.
+ranking diagnostics, not FPDE attribution methods. The underlying norm
+baseline helper is named `frame_norm_scores`; `energy_frame_scores` remains a
+backward-compatible alias.
 
 See `docs/dynamic_fpde_experiments.md` for dataset assumptions, output schemas,
 metric definitions, CUDA details, and table generation.

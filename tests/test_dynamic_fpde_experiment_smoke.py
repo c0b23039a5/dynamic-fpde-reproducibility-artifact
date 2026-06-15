@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import math
 import subprocess
+import sys
+import types
 import tomllib
 from pathlib import Path
 
@@ -60,6 +62,73 @@ def test_cuda_backend_error_is_not_silently_downgraded(monkeypatch: pytest.Monke
 
     with pytest.raises(RuntimeError, match="CUDA backend requested"):
         runner._ensure_backend("cuda")
+
+
+def test_cuda_backend_uses_local_cupy_path_without_fpde_dynamic_cuda(monkeypatch: pytest.MonkeyPatch):
+    from fpde import prepare_dynamic_fpde_context
+
+    from experiments.dynamic_fpde_audio.datasets import ESCSample
+    from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import (
+        _explain_batch_cpu,
+        _explain_batch_cuda,
+        _resolve_dynamic_input,
+    )
+
+    class _FakeRuntime:
+        @staticmethod
+        def getDeviceCount() -> int:
+            return 1
+
+    fake_cupy = types.SimpleNamespace(
+        abs=np.abs,
+        asarray=np.asarray,
+        asnumpy=np.asarray,
+        cuda=types.SimpleNamespace(runtime=_FakeRuntime()),
+        float64=np.float64,
+        sqrt=np.sqrt,
+        sum=np.sum,
+    )
+    monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
+
+    X_train = [
+        np.array([[0.0, 0.2], [0.5, 0.4], [1.0, 0.7]], dtype=float),
+        np.array([[0.1, 0.1], [0.4, 0.5], [0.9, 0.8]], dtype=float),
+        np.array([[1.0, 0.3], [0.4, 0.2], [0.0, 0.1]], dtype=float),
+        np.array([[0.9, 0.4], [0.3, 0.3], [0.1, 0.0]], dtype=float),
+    ]
+    context = prepare_dynamic_fpde_context(X_train, ["class_a", "class_a", "class_b", "class_b"], prototype_length=3)
+    samples = [
+        ESCSample("sample_a", Path("sample_a.wav"), "sample_a.wav", 1, "class_a"),
+        ESCSample("sample_b", Path("sample_b.wav"), "sample_b.wav", 1, "class_a"),
+    ]
+    resolved = [
+        _resolve_dynamic_input(
+            X,
+            context,
+            sample=sample,
+            target_label="class_a",
+            rival_label="class_b",
+        )
+        for sample, X in zip(
+            samples,
+            [
+                np.array([[0.2, 0.2], [0.6, 0.4], [0.8, 0.6]], dtype=float),
+                np.array([[0.0, 0.3], [0.5, 0.3], [1.1, 0.7]], dtype=float),
+            ],
+            strict=True,
+        )
+    ]
+
+    for mode in ("dynamic_diff", "dynamic_cos", "dynamic_hyb"):
+        cpu = _explain_batch_cpu(resolved, mode=mode, lambda_hyb=0.35)
+        cuda = _explain_batch_cuda(resolved, mode=mode, lambda_hyb=0.35)
+
+        for sample in samples:
+            cpu_explanation = cpu[sample.sample_id][0]
+            cuda_explanation = cuda[sample.sample_id][0]
+            np.testing.assert_allclose(cuda_explanation.attributions, cpu_explanation.attributions, rtol=1e-8, atol=1e-10)
+            assert cuda_explanation.evidence == pytest.approx(cpu_explanation.evidence, rel=1e-8, abs=1e-10)
+            assert cuda_explanation.rival_label == cpu_explanation.rival_label
 
 
 def test_gitignore_excludes_dynamic_audio_feature_cache_paths():

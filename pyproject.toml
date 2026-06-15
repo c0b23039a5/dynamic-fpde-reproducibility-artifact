@@ -28,6 +28,9 @@ dynamic-audio = [
 plot = [
   "matplotlib",
 ]
+cuda = [
+  "cupy-cuda13x",
+]
 
 [tool.setuptools.packages.find]
 include = ["experiments*"]

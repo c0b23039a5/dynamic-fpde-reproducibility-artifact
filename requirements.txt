@@ -23,3 +23,7 @@ pytest
 pyarrow
 librosa
 soundfile
+
+# Optional NVIDIA CUDA backend for Dynamic-FPDE tensor batches.
+# Install the CuPy wheel that matches your local CUDA runtime.
+cupy-cuda13x

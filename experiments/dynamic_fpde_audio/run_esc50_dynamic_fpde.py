@@ -260,14 +260,7 @@ def _ensure_cuda_backend() -> None:
     except ImportError as exc:
         raise RuntimeError(
             "CUDA backend requested, but CuPy is not installed. Install a CUDA-matched CuPy package "
-            "or the fpde CUDA extra before rerunning with --backend cuda."
-        ) from exc
-    try:
-        from fpde.dynamic_cuda import dynamic_cos_fpde_gpu, dynamic_diff_fpde_gpu, dynamic_hyb_fpde_gpu  # noqa: F401
-    except ImportError as exc:
-        raise RuntimeError(
-            "CUDA backend requested, but fpde.dynamic_cuda could not be imported. "
-            "Install fpde from https://github.com/fpde-xai/fpde.git@dynamic with CUDA support."
+            "such as cupy-cuda13x before rerunning with --backend cuda."
         ) from exc
     try:
         device_count = int(cp.cuda.runtime.getDeviceCount())
@@ -280,6 +273,94 @@ def _ensure_cuda_backend() -> None:
 def _ensure_backend(backend: str) -> None:
     if backend == "cuda":
         _ensure_cuda_backend()
+
+
+def _dynamic_diff_fpde_cuda(
+    X_batch: np.ndarray,
+    target_batch: np.ndarray,
+    rival_batch: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
+    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
+    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
+    attrs = (X_gpu - rival_gpu) ** 2 - (X_gpu - target_gpu) ** 2
+    evidences = cp.sum(attrs, axis=(1, 2))
+    return cp.asnumpy(attrs), cp.asnumpy(evidences)
+
+
+def _dynamic_cos_fpde_cuda(
+    X_batch: np.ndarray,
+    target_batch: np.ndarray,
+    rival_batch: np.ndarray,
+    *,
+    anchor_batch: np.ndarray,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
+    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
+    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
+    anchor_gpu = cp.asarray(anchor_batch, dtype=cp.float64)
+
+    z = X_gpu - anchor_gpu
+    q_target = target_gpu - anchor_gpu
+    q_rival = rival_gpu - anchor_gpu
+    z_norm = cp.sqrt(cp.sum(z * z, axis=(1, 2), keepdims=True) + float(eps))
+    target_norm = cp.sqrt(cp.sum(q_target * q_target, axis=(1, 2), keepdims=True) + float(eps))
+    rival_norm = cp.sqrt(cp.sum(q_rival * q_rival, axis=(1, 2), keepdims=True) + float(eps))
+    attrs = (z * q_target) / (z_norm * target_norm) - (z * q_rival) / (z_norm * rival_norm)
+    evidences = cp.sum(attrs, axis=(1, 2))
+    return cp.asnumpy(attrs), cp.asnumpy(evidences)
+
+
+def _dynamic_hyb_fpde_cuda(
+    X_batch: np.ndarray,
+    target_batch: np.ndarray,
+    rival_batch: np.ndarray,
+    *,
+    lambda_hyb: float = 0.5,
+    anchor_batch: np.ndarray,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
+    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
+    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
+    anchor_gpu = cp.asarray(anchor_batch, dtype=cp.float64)
+
+    diff_attrs = (X_gpu - rival_gpu) ** 2 - (X_gpu - target_gpu) ** 2
+    diff_evidences = cp.sum(diff_attrs, axis=(1, 2))
+
+    z = X_gpu - anchor_gpu
+    q_target = target_gpu - anchor_gpu
+    q_rival = rival_gpu - anchor_gpu
+    z_norm = cp.sqrt(cp.sum(z * z, axis=(1, 2), keepdims=True) + float(eps))
+    target_norm = cp.sqrt(cp.sum(q_target * q_target, axis=(1, 2), keepdims=True) + float(eps))
+    rival_norm = cp.sqrt(cp.sum(q_rival * q_rival, axis=(1, 2), keepdims=True) + float(eps))
+    cos_attrs = (z * q_target) / (z_norm * target_norm) - (z * q_rival) / (z_norm * rival_norm)
+    cos_evidences = cp.sum(cos_attrs, axis=(1, 2))
+
+    diff_scales = cp.sum(cp.abs(diff_attrs), axis=(1, 2), keepdims=True) + float(eps)
+    cos_scales = cp.sum(cp.abs(cos_attrs), axis=(1, 2), keepdims=True) + float(eps)
+    lambda_value = float(lambda_hyb)
+    attrs = lambda_value * (diff_attrs / diff_scales) + (1.0 - lambda_value) * (cos_attrs / cos_scales)
+    evidences = cp.sum(attrs, axis=(1, 2))
+    return (
+        cp.asnumpy(attrs),
+        cp.asnumpy(evidences),
+        {
+            "diff_evidence": cp.asnumpy(diff_evidences),
+            "cos_evidence": cp.asnumpy(cos_evidences),
+            "lambda_hyb": lambda_value,
+            "normalize": "l1",
+            "diff_scale": cp.asnumpy(diff_scales.reshape(-1)),
+            "cos_scale": cp.asnumpy(cos_scales.reshape(-1)),
+        },
+    )
 
 
 def _resolve_dynamic_input(
@@ -454,7 +535,6 @@ def _explain_batch_cuda(
     if not resolved_items:
         return {}
     _ensure_cuda_backend()
-    from fpde.dynamic_cuda import dynamic_cos_fpde_gpu, dynamic_diff_fpde_gpu, dynamic_hyb_fpde_gpu
 
     groups: dict[tuple[int, int], list[_ResolvedDynamicInput]] = {}
     for item in resolved_items:
@@ -469,18 +549,18 @@ def _explain_batch_cuda(
 
         start = time.perf_counter()
         if mode == "dynamic_diff":
-            attrs, evidences = dynamic_diff_fpde_gpu(X_batch, target_batch, rival_batch)
+            attrs, evidences = _dynamic_diff_fpde_cuda(X_batch, target_batch, rival_batch)
             details = None
         elif mode == "dynamic_cos":
-            attrs, evidences = dynamic_cos_fpde_gpu(X_batch, target_batch, rival_batch, anchor=anchor_batch)
+            attrs, evidences = _dynamic_cos_fpde_cuda(X_batch, target_batch, rival_batch, anchor_batch=anchor_batch)
             details = None
         elif mode == "dynamic_hyb":
-            attrs, evidences, details = dynamic_hyb_fpde_gpu(
+            attrs, evidences, details = _dynamic_hyb_fpde_cuda(
                 X_batch,
                 target_batch,
                 rival_batch,
                 lambda_hyb=lambda_hyb,
-                anchor=anchor_batch,
+                anchor_batch=anchor_batch,
             )
         else:
             raise ValueError(f"unsupported Dynamic-FPDE mode: {mode}")

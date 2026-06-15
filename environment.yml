@@ -25,3 +25,5 @@ dependencies:
       - pyarrow
       - librosa
       - soundfile
+      # Optional NVIDIA CUDA backend for Dynamic-FPDE tensor batches.
+      - cupy-cuda13x

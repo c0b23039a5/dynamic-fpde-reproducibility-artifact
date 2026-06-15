@@ -19,6 +19,13 @@ python -m pip install -e ".[dev,dynamic-audio,plot]"
 python -m pytest
 ```
 
+For NVIDIA CUDA acceleration, install the CUDA extra with the CuPy wheel that
+matches CUDA 13.x:
+
+```bash
+python -m pip install -e ".[dev,dynamic-audio,plot,cuda]"
+```
+
 On this Windows/OneDrive checkout, `uv` may be more reliable:
 
 ```bash
@@ -60,11 +67,11 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
 
 `--backend` accepts `cpu` or `cuda` and defaults to `cpu`. Feature extraction
 and temporal resampling remain CPU-side for both backends. In CUDA mode, the
-runner batches already-resampled Dynamic-FPDE tensors and calls
-`dynamic_diff_fpde_gpu`, `dynamic_cos_fpde_gpu`, and `dynamic_hyb_fpde_gpu`;
-outputs are converted back to NumPy before metrics and CSV writing. If CUDA is
-requested but CuPy or a usable CUDA device is unavailable, the run fails with a
-clear error instead of falling back to CPU.
+runner batches already-resampled Dynamic-FPDE tensors, evaluates Diff/Cos/Hyb
+attribution tensors with CuPy on the NVIDIA GPU, and converts outputs back to
+NumPy before metrics and CSV writing. If CUDA is requested but CuPy or a usable
+CUDA device is unavailable, the run fails with a clear error instead of falling
+back to CPU.
 
 Runtime excludes CPU feature extraction and CPU temporal resampling unless
 otherwise stated. CUDA acceleration applies only to batched Dynamic-FPDE tensor

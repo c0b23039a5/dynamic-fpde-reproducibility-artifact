@@ -38,6 +38,12 @@ dataset license.
 python -m pip install -e ".[dev,dynamic-audio,plot]"
 ```
 
+For NVIDIA CUDA acceleration, install the optional CUDA extra:
+
+```bash
+python -m pip install -e ".[dev,dynamic-audio,plot,cuda]"
+```
+
 ## Run Smoke Mode
 
 ```bash
@@ -93,14 +99,14 @@ Feature extraction stays on CPU. Temporal resampling stays on CPU. CUDA mode is
 entered only after each sample, target prototype, rival prototype, and anchor
 has been resampled to common tensor shapes. The runner stacks compatible
 resampled samples as `(N, T, F)` batches, stacks target prototypes, rival
-prototypes, and anchors to matching `(N, T, F)` tensors, then calls
-`dynamic_diff_fpde_gpu`, `dynamic_cos_fpde_gpu`, or `dynamic_hyb_fpde_gpu`.
-CUDA outputs are converted back to NumPy before metric calculation and CSV
-writing.
+prototypes, and anchors to matching `(N, T, F)` tensors, then evaluates the
+Dynamic-Diff, Dynamic-Cos, and Dynamic-Hyb attribution formulas with CuPy on
+the NVIDIA GPU. CUDA outputs are converted back to NumPy before metric
+calculation and CSV writing.
 
-If `--backend cuda` is requested but CuPy, the `fpde.dynamic_cuda` helpers, or
-a usable CUDA device are unavailable, the runner raises a clear error and does
-not silently fall back to CPU.
+If `--backend cuda` is requested but CuPy or a usable CUDA device are
+unavailable, the runner raises a clear error and does not silently fall back to
+CPU.
 
 Runtime excludes CPU feature extraction and CPU temporal resampling unless
 otherwise stated. CUDA acceleration applies only to batched Dynamic-FPDE tensor

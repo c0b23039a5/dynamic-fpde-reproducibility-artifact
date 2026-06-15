@@ -10,7 +10,8 @@ METHOD_LABELS = {
     "dynamic_diff": "Native-Time Dynamic-Diff",
     "dynamic_cos": "Native-Time Dynamic-Cos",
     "dynamic_hyb": "Native-Time Dynamic-Hyb",
-    "energy_baseline": "Energy baseline",
+    "energy_baseline_raw": "Raw energy baseline",
+    "feature_norm_baseline_standardized": "Standardized feature-norm baseline",
     "random_baseline": "Random baseline",
 }
 

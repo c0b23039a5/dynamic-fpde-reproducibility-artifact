@@ -11,6 +11,12 @@
 - Clarify that Dynamic-FPDE explains frame-level acoustic features, not raw
   waveform samples, causal effects, sampling-rate-invariant behavior, or
   musical-section alignment.
+- Batch CUDA attribution over all resolved test samples that naturally share
+  the same `(T, F)` while keeping diagnostics on CPU.
+- Split runtime reporting into Native-Time FPDE, diagnostic, and total runtime
+  columns.
+- Clarify that sub-frame zero padding is an intra-clip analysis-frame guard,
+  not fixed-length temporal alignment or CUDA batch padding.
 
 ## v0.1.0
 

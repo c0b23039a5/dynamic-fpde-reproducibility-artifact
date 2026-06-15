@@ -80,10 +80,16 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
 ```
 
 Audio decode, target-sample-rate resampling, mono conversion, and acoustic
-feature extraction stay on CPU. Native-Time FPDE computation can run on CPU or,
-with `--backend cuda`, as CuPy elementwise attribution tensor computation.
-CUDA mode never pads or fixed-length-resamples variable-length clips; it groups
-only samples that naturally share the same `(T, F)`.
+feature extraction, feature standardization, and deletion/insertion diagnostics
+stay on CPU. Native-Time FPDE computation can run on CPU or, with
+`--backend cuda`, as CuPy elementwise attribution tensor computation. CUDA mode
+never pads or fixed-length-resamples variable-length clips; it groups only
+samples that naturally share the same `(T, F)`.
+
+Feature extraction may zero-pad a clip shorter than one analysis frame so that
+the clip yields `T == 1`. This is intra-clip minimum-frame padding only; it is
+not temporal alignment, not fixed-length resampling, and not dense tensor
+batching. ESC-50 clips are normally longer than one frame.
 
 ## Main Outputs
 
@@ -104,6 +110,10 @@ The ESC-50 runner writes:
 Feature caches under `outputs/**/cache/features/` are ignored by default
 because they are derived from ESC-50 audio.
 
+`dynamic_fpde_sample_metrics.csv` keeps `runtime_sec` as a compatibility alias
+for `total_runtime_sec`. It also reports `native_fpde_runtime_sec` and
+`diagnostic_runtime_sec` separately.
+
 ## Interpretation Limits
 
 Dynamic-FPDE explains prototype evidence in frame-level acoustic feature space.
@@ -116,6 +126,10 @@ Total evidence can depend on the number of frames, so do not directly compare
 total evidence across clips with different lengths without normalization or
 careful interpretation. Prototype frames are auditable through
 `source_sample_id`, `source_frame_index`, and `source_time_sec`.
+
+The runner includes ranking baselines named `energy_baseline_raw`,
+`feature_norm_baseline_standardized`, and `random_baseline`. They are frame
+ranking diagnostics, not FPDE attribution methods.
 
 See `docs/dynamic_fpde_experiments.md` for dataset assumptions, output schemas,
 metric definitions, CUDA details, and table generation.

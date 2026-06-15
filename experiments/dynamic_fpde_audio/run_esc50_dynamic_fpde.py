@@ -77,6 +77,9 @@ SAMPLE_FIELDS = [
     "insertion_gain_auc",
     "combined_score",
     "runtime_sec",
+    "native_fpde_runtime_sec",
+    "diagnostic_runtime_sec",
+    "total_runtime_sec",
     "T",
     "F",
     "phi_shape",
@@ -215,6 +218,10 @@ def _margin_sign(value: float) -> str:
     if value < 0.0:
         return "negative"
     return "zero"
+
+
+def _is_ranking_baseline(method: str) -> bool:
+    return method in {"energy_baseline_raw", "feature_norm_baseline_standardized", "random_baseline"}
 
 
 def _stable_sample_seed(seed: int, sample_id: str) -> int:
@@ -532,6 +539,25 @@ def _explain_batch_cuda(
     return out
 
 
+def _explain_many_cuda(
+    api: SimpleNamespace,
+    items: list[_ResolvedNativeInput],
+    *,
+    mode: str,
+    lambda_hyb: float,
+    normalize: str,
+) -> dict[str, tuple[Any, float]]:
+    """Explain all items with CUDA, grouped only by naturally equal ``(T, F)``.
+
+    This wrapper exists so the main runner and tests can assert that CUDA is
+    launched over the full resolved test set rather than one sample at a time.
+    The underlying batch helper still refuses to pad or resample; it stacks
+    only items that already have identical shapes.
+    """
+
+    return _explain_batch_cuda(api, items, mode=mode, lambda_hyb=lambda_hyb, normalize=normalize)
+
+
 def _baseline_explanation(api: SimpleNamespace, base: Any, scores: np.ndarray, *, method: str) -> Any:
     return api.NativeTimeDynamicFPDEExplanation(
         mode=method,
@@ -556,11 +582,14 @@ def _validate_native_output(X: np.ndarray, explanation: Any, item: _ResolvedNati
         raise ValueError("target prototype must have shape (F,)")
     if item.p_rival.shape != (X.shape[1],):
         raise ValueError("rival prototype must have shape (F,)")
-    arrays = [X, phi, item.p_target, item.p_rival, np.asarray([explanation.evidence], dtype=float)]
+    if item.anchor.shape != (X.shape[1],):
+        raise ValueError("anchor must have shape (F,)")
+    arrays = [X, phi, item.p_target, item.p_rival, item.anchor, np.asarray([explanation.evidence], dtype=float)]
     if not all(np.all(np.isfinite(arr)) for arr in arrays):
         raise ValueError("Native-Time result contains NaN or inf")
-    if "resampled_length" in getattr(explanation, "details", {}):
-        raise ValueError("Native-Time results must not contain a resampled_length field")
+    details = getattr(explanation, "details", {})
+    if "resampled_length" in details or "prototype_length" in details:
+        raise ValueError("Native-Time results must not contain resampled_length or prototype_length fields")
 
 
 def _row_from_result(
@@ -575,7 +604,8 @@ def _row_from_result(
     explanation: Any,
     selection_explanation: Any,
     curves: dict[str, Any],
-    runtime_sec: float,
+    native_fpde_runtime_sec: float,
+    diagnostic_runtime_sec: float,
     random_repetition: int | str = "",
 ) -> dict[str, object]:
     _validate_native_output(item.X, explanation, item)
@@ -583,10 +613,11 @@ def _row_from_result(
     residual: float | str = "" if not np.isfinite(residual_value) else residual_value
     prototype_margin = float(explanation.evidence)
     selection_margin = float(selection_explanation.evidence)
-    evidence_role = "evaluation_margin" if method.endswith("_baseline") else "explanation_margin"
+    evidence_role = "evaluation_margin" if _is_ranking_baseline(method) else "explanation_margin"
     target_meta = item.target_metadata
     rival_meta = item.rival_metadata
-    return {
+    total_runtime_sec = float(native_fpde_runtime_sec) + float(diagnostic_runtime_sec)
+    row = {
         "dataset": "esc50",
         "fold": int(fold),
         "seed": int(seed),
@@ -615,7 +646,10 @@ def _row_from_result(
         "deletion_drop_auc": float(curves["deletion_drop_auc"]),
         "insertion_gain_auc": float(curves["insertion_gain_auc"]),
         "combined_score": float(curves["combined_score"]),
-        "runtime_sec": float(runtime_sec),
+        "runtime_sec": total_runtime_sec,
+        "native_fpde_runtime_sec": float(native_fpde_runtime_sec),
+        "diagnostic_runtime_sec": float(diagnostic_runtime_sec),
+        "total_runtime_sec": total_runtime_sec,
         "T": int(item.X.shape[0]),
         "F": int(item.X.shape[1]),
         "phi_shape": str(tuple(np.asarray(explanation.attributions).shape)),
@@ -634,39 +668,9 @@ def _row_from_result(
         "random_repetition": random_repetition,
         "aggregation_unit": "sample_repetition" if random_repetition != "" else "sample",
     }
-
-
-def _explain_and_score(
-    api: SimpleNamespace,
-    item: _ResolvedNativeInput,
-    *,
-    method: str,
-    mode: str,
-    lambda_hyb: float,
-    normalize: str,
-    feature_names: list[str],
-    feature_config: FeatureConfig,
-    steps: int,
-    backend: str,
-) -> tuple[Any, dict[str, Any], float]:
-    if backend == "cuda":
-        explanation, runtime = _explain_batch_cuda(api, [item], mode=mode, lambda_hyb=lambda_hyb, normalize=normalize)[item.sample.sample_id]
-    else:
-        start = time.perf_counter()
-        explanation = _explain_one_cpu(
-            api,
-            item,
-            mode=mode,
-            lambda_hyb=lambda_hyb,
-            normalize=normalize,
-            feature_names=feature_names,
-            feature_config=feature_config,
-        )
-        runtime = time.perf_counter() - start
-    curve_start = time.perf_counter()
-    curves = native_temporal_deletion_insertion_curves(explanation, steps=steps)
-    runtime += time.perf_counter() - curve_start
-    return explanation, curves, runtime
+    if "resampled_length" in row or "prototype_length" in row:
+        raise ValueError("Native-Time CSV rows must not contain resampled_length or prototype_length")
+    return row
 
 
 def _select_lambda(
@@ -850,8 +854,8 @@ def run_fold(
 
     sample_rows: list[dict[str, object]] = []
     first_plot_payload: tuple[ESCSample, Any, dict[str, Any]] | None = None
-    for sample in test_samples:
-        selection_item = _resolve_native_input(
+    selection_items = [
+        _resolve_native_input(
             sample,
             standardized[sample.sample_id],
             prototypes,
@@ -860,41 +864,81 @@ def run_fold(
             class_means=class_means,
             global_mean=global_mean,
         )
-        selection_explanation, _, _ = _explain_and_score(
+        for sample in test_samples
+    ]
+    if backend == "cuda":
+        selection_results = _explain_many_cuda(
             api,
-            selection_item,
-            method="dynamic_diff",
+            selection_items,
             mode="dynamic_diff",
             lambda_hyb=selected_lambda,
             normalize=normalize,
-            feature_names=feature_names,
-            feature_config=feature_config,
-            steps=steps,
-            backend=backend,
         )
-        item = _resolve_native_input(
-            sample,
-            standardized[sample.sample_id],
+    else:
+        selection_results = {}
+        for item in selection_items:
+            start = time.perf_counter()
+            selection_results[item.sample.sample_id] = (
+                _explain_one_cpu(
+                    api,
+                    item,
+                    mode="dynamic_diff",
+                    lambda_hyb=selected_lambda,
+                    normalize=normalize,
+                    feature_names=feature_names,
+                    feature_config=feature_config,
+                ),
+                time.perf_counter() - start,
+            )
+
+    items = [
+        _resolve_native_input(
+            item.sample,
+            standardized[item.sample.sample_id],
             prototypes,
-            rival_label=selection_explanation.rival_label,
+            rival_label=selection_results[item.sample.sample_id][0].rival_label,
             anchor_mode=anchor,
             class_means=class_means,
             global_mean=global_mean,
         )
-
-        for method, fpde_mode in (("dynamic_diff", "dynamic_diff"), ("dynamic_cos", "dynamic_cos"), ("dynamic_hyb", "dynamic_hyb")):
-            explanation, curves, runtime = _explain_and_score(
+        for item in selection_items
+    ]
+    fpde_results: dict[tuple[str, str], tuple[Any, float]] = {}
+    for method, fpde_mode in (("dynamic_diff", "dynamic_diff"), ("dynamic_cos", "dynamic_cos"), ("dynamic_hyb", "dynamic_hyb")):
+        if backend == "cuda":
+            batch_results = _explain_many_cuda(
                 api,
-                item,
-                method=method,
+                items,
                 mode=fpde_mode,
                 lambda_hyb=selected_lambda,
                 normalize=normalize,
-                feature_names=feature_names,
-                feature_config=feature_config,
-                steps=steps,
-                backend=backend,
             )
+            fpde_results.update({(sample_id, method): value for sample_id, value in batch_results.items()})
+        else:
+            for item in items:
+                start = time.perf_counter()
+                fpde_results[(item.sample.sample_id, method)] = (
+                    _explain_one_cpu(
+                        api,
+                        item,
+                        mode=fpde_mode,
+                        lambda_hyb=selected_lambda,
+                        normalize=normalize,
+                        feature_names=feature_names,
+                        feature_config=feature_config,
+                    ),
+                    time.perf_counter() - start,
+                )
+
+    for item in items:
+        sample = item.sample
+        selection_explanation = selection_results[sample.sample_id][0]
+
+        for method, fpde_mode in (("dynamic_diff", "dynamic_diff"), ("dynamic_cos", "dynamic_cos"), ("dynamic_hyb", "dynamic_hyb")):
+            explanation, native_runtime = fpde_results[(sample.sample_id, method)]
+            diagnostic_start = time.perf_counter()
+            curves = native_temporal_deletion_insertion_curves(explanation, steps=steps)
+            diagnostic_runtime = time.perf_counter() - diagnostic_start
             if method == "dynamic_hyb" and first_plot_payload is None:
                 first_plot_payload = (sample, explanation, curves)
             sample_rows.append(
@@ -909,12 +953,14 @@ def run_fold(
                     explanation=explanation,
                     selection_explanation=selection_explanation,
                     curves=curves,
-                    runtime_sec=runtime,
+                    native_fpde_runtime_sec=native_runtime,
+                    diagnostic_runtime_sec=diagnostic_runtime,
                 )
             )
 
         for method, scores_iter in (
-            ("energy_baseline", [energy_frame_scores(feature_map[sample.sample_id], feature_names)]),
+            ("energy_baseline_raw", [energy_frame_scores(feature_map[sample.sample_id], feature_names)]),
+            ("feature_norm_baseline_standardized", [energy_frame_scores(item.X, feature_names)]),
             (
                 "random_baseline",
                 [
@@ -930,13 +976,15 @@ def run_fold(
             for repetition, scores in enumerate(scores_iter):
                 start = time.perf_counter()
                 explanation = _baseline_explanation(api, selection_explanation, scores, method=method)
+                native_runtime = time.perf_counter() - start
+                diagnostic_start = time.perf_counter()
                 curves = native_temporal_deletion_insertion_curves(
                     explanation,
                     ranking_scores=scores,
                     evidence_by_frame=selection_explanation.time_importance,
                     steps=steps,
                 )
-                runtime = time.perf_counter() - start
+                diagnostic_runtime = time.perf_counter() - diagnostic_start
                 sample_rows.append(
                     _row_from_result(
                         fold=fold,
@@ -949,7 +997,8 @@ def run_fold(
                         explanation=explanation,
                         selection_explanation=selection_explanation,
                         curves=curves,
-                        runtime_sec=runtime,
+                        native_fpde_runtime_sec=native_runtime,
+                        diagnostic_runtime_sec=diagnostic_runtime,
                         random_repetition=repetition if method == "random_baseline" else "",
                     )
                 )

@@ -77,6 +77,9 @@ def _frame_signal(y: np.ndarray, frame_length: int, hop_length: int) -> np.ndarr
     if y.size == 0:
         y = np.zeros(1, dtype=np.float32)
     if y.size < frame_length:
+        # Intra-clip minimum-frame padding only: this creates one analysis
+        # frame for a sub-frame clip. It is not temporal alignment, global
+        # fixed-length resampling, or dense batch padding across clips.
         padded = np.pad(y, (0, frame_length - y.size))
         return padded.reshape(1, frame_length)
 

@@ -294,13 +294,18 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "rival_prototype_source_sample_id",
         "prototype_mode",
         "prototype_selection_rule",
+        "native_fpde_runtime_sec",
+        "diagnostic_runtime_sec",
+        "total_runtime_sec",
     }.issubset(rows[0])
+    assert "prototype_length" not in rows[0]
+    assert "resampled_length" not in rows[0]
     assert {row["prototype_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
     assert {row["selection_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
     assert {row["selection_margin_source"] for row in rows} == {"native_dynamic_diff"}
     assert {row["aggregation_unit"] for row in rows} == {"sample", "sample_repetition"}
     assert all(row["prototype_margin"] == row["evidence"] for row in rows)
-    baseline_rows = [row for row in rows if row["method"].endswith("_baseline")]
+    baseline_rows = [row for row in rows if row["method"].endswith("_baseline") or row["method"].endswith("_baseline_raw") or row["method"].endswith("_baseline_standardized")]
     assert baseline_rows
     assert {row["evidence_role"] for row in baseline_rows} == {"evaluation_margin"}
     assert all(row["evaluation_evidence"] == row["evidence"] for row in baseline_rows)
@@ -309,12 +314,17 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "dynamic_diff",
         "dynamic_cos",
         "dynamic_hyb",
-        "energy_baseline",
+        "energy_baseline_raw",
+        "feature_norm_baseline_standardized",
         "random_baseline",
     }
     assert all(row["T"] and row["F"] for row in rows)
     assert {row["shape_preserved"] for row in rows} == {"True"}
     assert {row["prototype_mode"] for row in rows} == {"selected_exemplar"}
+    for row in rows:
+        assert float(row["runtime_sec"]) == pytest.approx(float(row["total_runtime_sec"]))
+        assert float(row["native_fpde_runtime_sec"]) >= 0.0
+        assert float(row["diagnostic_runtime_sec"]) >= 0.0
     for sample_id in {row["sample_id"] for row in rows}:
         sample_group = [row for row in rows if row["sample_id"] == sample_id]
         assert len({row["target_label"] for row in sample_group}) == 1

@@ -41,6 +41,12 @@ rate is a preprocessing convention, not a mathematical invariance claim.
 Feature caches are written under `outputs/**/cache/features/` and remain
 ignored by git.
 
+If a decoded clip is shorter than `frame_length`, the feature extractor
+zero-pads that clip internally to create a single analysis frame (`T == 1`).
+This is an intra-clip minimum-frame guard only. It is not temporal alignment,
+not fixed-length resampling, not global-duration normalization, and not dense
+tensor batching. ESC-50 clips are normally longer than one frame.
+
 ## Native Prototypes
 
 Native-Time uses feature-space vector prototypes:
@@ -150,10 +156,11 @@ clearly and does not fall back to legacy resampled-time Dynamic-FPDE.
 
 `--backend cuda` requires CuPy and a usable CUDA device. CPU work still includes
 audio decode, audio resampling to `target_sr`, mono conversion, feature
-extraction, and feature standardization. CUDA acceleration applies only to
-Native-Time attribution tensor computation. Variable-length samples are not
-padded; CUDA grouping is limited to samples that naturally share the same
-`(T, F)`.
+extraction, feature standardization, and deletion/insertion diagnostics. CUDA
+acceleration applies only to Native-Time attribution tensor computation. The
+main runner resolves all test samples first, then launches CUDA over grouped
+batches. Variable-length samples are not padded, cropped, or resampled; CUDA
+grouping is limited to samples that naturally share the same `(T, F)`.
 
 ## Outputs
 
@@ -185,9 +192,17 @@ Sample rows include Native-Time-specific checks and metadata:
 `prototype_mode`, `prototype_selection_rule`, `normalize`, `anchor`, and
 `evidence_role`.
 
+Runtime columns are split into:
+
+- `native_fpde_runtime_sec`, the Native-Time attribution computation time
+- `diagnostic_runtime_sec`, the CPU prototype-evidence diagnostic time
+- `total_runtime_sec`, their sum
+- `runtime_sec`, retained as a compatibility alias for `total_runtime_sec`
+
 Before rows are written, the runner checks that `Phi.shape == X.shape`,
-prototypes have shape `(F,)`, and `X`, prototypes, `Phi`, and evidence are
-finite. Native-Time result rows do not contain a resampled length field.
+prototypes and anchors have shape `(F,)`, and `X`, prototypes, anchors, `Phi`,
+and evidence are finite. Native-Time result rows do not contain
+`prototype_length` or `resampled_length` fields.
 
 ## Diagnostics
 
@@ -214,8 +229,15 @@ Generated tables use Native-Time terminology:
 - Native-Time Dynamic-Diff
 - Native-Time Dynamic-Cos
 - Native-Time Dynamic-Hyb
-- Energy baseline
+- Raw energy baseline
+- Standardized feature-norm baseline
 - Random baseline
+
+`energy_baseline_raw` ranks native frames by raw acoustic feature-vector norm.
+`feature_norm_baseline_standardized` ranks native frames by standardized
+feature-vector norm. Neither is an FPDE attribution method or attribution
+evidence; both are ranking baselines evaluated with the common prototype
+evidence diagnostic.
 
 `table_dynamic_fpde_native_time_checks.tex` reports shape preservation,
 prototype metadata availability, and additivity residuals.

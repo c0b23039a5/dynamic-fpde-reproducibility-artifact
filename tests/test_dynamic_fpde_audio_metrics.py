@@ -49,7 +49,7 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
         {
             "dataset": "esc50",
             "fold": 1,
-            "method": "energy_baseline",
+            "method": "energy_baseline_raw",
             "evidence": 2.0,
             "prototype_margin": 2.0,
             "selection_margin": 4.0,
@@ -65,7 +65,7 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
 
     summary = aggregate_by_method(rows)
     hyb = next(row for row in summary if row["method"] == "dynamic_hyb")
-    energy = next(row for row in summary if row["method"] == "energy_baseline")
+    energy = next(row for row in summary if row["method"] == "energy_baseline_raw")
     additivity = aggregate_additivity(rows)
 
     assert hyb["combined_score_mean"] == pytest.approx(0.6)
@@ -113,7 +113,8 @@ def test_selection_positive_margin_summary_uses_same_sample_count_per_method():
             ("dynamic_diff", selection_margin),
             ("dynamic_cos", -selection_margin),
             ("dynamic_hyb", selection_margin / 2.0),
-            ("energy_baseline", -selection_margin),
+            ("energy_baseline_raw", -selection_margin),
+            ("feature_norm_baseline_standardized", -selection_margin),
             ("random_baseline", selection_margin),
         ]:
             rows.append(
@@ -134,7 +135,8 @@ def test_selection_positive_margin_summary_uses_same_sample_count_per_method():
         "dynamic_diff": 2,
         "dynamic_cos": 2,
         "dynamic_hyb": 2,
-        "energy_baseline": 2,
+        "energy_baseline_raw": 2,
+        "feature_norm_baseline_standardized": 2,
         "random_baseline": 2,
     }
 

@@ -20,6 +20,9 @@ SUMMARY_METRICS = (
     "insertion_gain_auc",
     "combined_score",
     "runtime_sec",
+    "native_fpde_runtime_sec",
+    "diagnostic_runtime_sec",
+    "total_runtime_sec",
 )
 
 

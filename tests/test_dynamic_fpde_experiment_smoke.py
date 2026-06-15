@@ -39,6 +39,27 @@ def test_cli_accepts_comma_separated_folds():
     args = build_parser().parse_args(["--dataset-root", "ESC-50", "--folds", "1,2,3,4,5"])
 
     assert args.folds == "1,2,3,4,5"
+    assert args.backend == "cpu"
+
+
+def test_cli_accepts_explicit_cuda_backend():
+    from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import build_parser
+
+    args = build_parser().parse_args(["--dataset-root", "ESC-50", "--backend", "cuda"])
+
+    assert args.backend == "cuda"
+
+
+def test_cuda_backend_error_is_not_silently_downgraded(monkeypatch: pytest.MonkeyPatch):
+    from experiments.dynamic_fpde_audio import run_esc50_dynamic_fpde as runner
+
+    def fail_cuda() -> None:
+        raise RuntimeError("CUDA backend requested, but CuPy is not installed")
+
+    monkeypatch.setattr(runner, "_ensure_cuda_backend", fail_cuda)
+
+    with pytest.raises(RuntimeError, match="CUDA backend requested"):
+        runner._ensure_backend("cuda")
 
 
 def test_gitignore_excludes_dynamic_audio_feature_cache_paths():
@@ -195,3 +216,59 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
     assert int(random_summary["n"]) == int(random_summary["n_unique_samples"])
     assert int(random_summary["n_rows"]) == int(random_summary["n_unique_samples"])
     assert float(random_summary["random_repetitions_mean"]) == pytest.approx(1.0)
+
+
+def _cupy_or_skip():
+    cp = pytest.importorskip("cupy")
+    try:
+        if int(cp.cuda.runtime.getDeviceCount()) < 1:
+            pytest.skip("CUDA device is unavailable")
+    except Exception as exc:
+        pytest.skip(f"CUDA runtime is unavailable: {exc}")
+    return cp
+
+
+def test_dynamic_fpde_cuda_backend_matches_cpu_on_synthetic_batch(tmp_path: Path):
+    _cupy_or_skip()
+    from fpde import prepare_dynamic_fpde_context
+
+    from experiments.dynamic_fpde_audio.datasets import ESCSample
+    from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import (
+        _explain_batch_cpu,
+        _explain_batch_cuda,
+        _resolve_dynamic_input,
+    )
+
+    X_train = [
+        np.array([[0.0, 0.2], [0.5, 0.4], [1.0, 0.7]], dtype=float),
+        np.array([[0.1, 0.1], [0.4, 0.5], [0.9, 0.8]], dtype=float),
+        np.array([[1.0, 0.3], [0.4, 0.2], [0.0, 0.1]], dtype=float),
+        np.array([[0.9, 0.4], [0.3, 0.3], [0.1, 0.0]], dtype=float),
+    ]
+    y_train = ["class_a", "class_a", "class_b", "class_b"]
+    context = prepare_dynamic_fpde_context(X_train, y_train, prototype_length=3)
+    samples = [
+        ESCSample("sample_a", tmp_path / "sample_a.wav", "sample_a.wav", 1, "class_a"),
+        ESCSample("sample_b", tmp_path / "sample_b.wav", "sample_b.wav", 1, "class_a"),
+    ]
+    X_test = [
+        np.array([[0.2, 0.2], [0.6, 0.4], [0.8, 0.6]], dtype=float),
+        np.array([[0.0, 0.3], [0.5, 0.3], [1.1, 0.7]], dtype=float),
+    ]
+    resolved = [
+        _resolve_dynamic_input(X, context, sample=sample, target_label="class_a", rival_label="class_b")
+        for sample, X in zip(samples, X_test, strict=True)
+    ]
+
+    for mode in ("dynamic_diff", "dynamic_cos", "dynamic_hyb"):
+        cpu = _explain_batch_cpu(resolved, mode=mode, lambda_hyb=0.35)
+        cuda = _explain_batch_cuda(resolved, mode=mode, lambda_hyb=0.35)
+
+        for sample in samples:
+            cpu_explanation = cpu[sample.sample_id][0]
+            cuda_explanation = cuda[sample.sample_id][0]
+            np.testing.assert_allclose(cuda_explanation.attributions, cpu_explanation.attributions, rtol=1e-8, atol=1e-10)
+            np.testing.assert_allclose(cuda_explanation.time_importance, cpu_explanation.time_importance, rtol=1e-8, atol=1e-10)
+            np.testing.assert_allclose(cuda_explanation.feature_importance, cpu_explanation.feature_importance, rtol=1e-8, atol=1e-10)
+            assert cuda_explanation.evidence == pytest.approx(cpu_explanation.evidence, rel=1e-8, abs=1e-10)
+            assert cuda_explanation.rival_label == cpu_explanation.rival_label

@@ -47,6 +47,7 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --mode smoke \
   --fold 1 \
   --seed 0 \
+  --backend cpu \
   --prototype-length 64
 ```
 
@@ -63,6 +64,7 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --mode pilot \
   --fold 1 \
   --seed 0 \
+  --backend cpu \
   --prototype-length 128
 ```
 
@@ -79,8 +81,30 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --folds 1,2,3,4,5 \
   --seed 0 \
   --prototype-length 128 \
+  --backend cpu \
   --make-figures
 ```
+
+## Backend Selection
+
+The ESC-50 runner accepts `--backend cpu|cuda`; the default is `cpu`.
+
+Feature extraction stays on CPU. Temporal resampling stays on CPU. CUDA mode is
+entered only after each sample, target prototype, rival prototype, and anchor
+has been resampled to common tensor shapes. The runner stacks compatible
+resampled samples as `(N, T, F)` batches, stacks target prototypes, rival
+prototypes, and anchors to matching `(N, T, F)` tensors, then calls
+`dynamic_diff_fpde_gpu`, `dynamic_cos_fpde_gpu`, or `dynamic_hyb_fpde_gpu`.
+CUDA outputs are converted back to NumPy before metric calculation and CSV
+writing.
+
+If `--backend cuda` is requested but CuPy, the `fpde.dynamic_cuda` helpers, or
+a usable CUDA device are unavailable, the runner raises a clear error and does
+not silently fall back to CPU.
+
+Runtime excludes CPU feature extraction and CPU temporal resampling unless
+otherwise stated. CUDA acceleration applies only to batched Dynamic-FPDE tensor
+operations.
 
 ## Outputs
 

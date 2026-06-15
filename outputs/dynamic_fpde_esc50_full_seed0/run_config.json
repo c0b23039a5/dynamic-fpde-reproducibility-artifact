@@ -1,0 +1,26 @@
+{
+  "backend": "cuda",
+  "dataset": "esc50",
+  "dataset_root": "data\\ESC-50",
+  "folds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "fpde_source": "git+https://github.com/fpde-xai/fpde.git@dynamic",
+  "lambda_grid": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "mode": "full",
+  "output_dir": "outputs\\dynamic_fpde_esc50_full_seed0",
+  "prototype_length": 128,
+  "random_repetitions": 5,
+  "seed": 0,
+  "steps": 20
+}

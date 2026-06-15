@@ -51,7 +51,8 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
 ```
 
 Smoke mode uses a small deterministic subset intended for quick local sanity
-checks.
+checks. Smoke outputs are sanity-check artifacts only; use pilot or full mode
+for reportable experiment tables.
 
 ## Run Pilot Mode
 
@@ -115,6 +116,12 @@ auditable attribution sum residual, deletion AUC, insertion AUC, and a combined
 score. The deletion/insertion metrics are prototype-driven and normalized. They
 are computed from prototype-evidence curves rather than class probabilities.
 
+All methods for a sample are evaluated with the same target/rival prototype
+pair. The runner first computes a Dynamic-Diff explanation with
+`rival_label=None`, records its `rival_label` as the common rival, then passes
+that common rival label to `dynamic_diff`, `dynamic_cos`, `dynamic_hyb`,
+`energy_baseline`, and `random_baseline` evaluations.
+
 The runner records method-specific prototype-margin diagnostics:
 
 - `prototype_margin`, equal to the Dynamic-FPDE prototype evidence value
@@ -127,6 +134,7 @@ It also records a method-independent selection margin:
 - `selection_margin_positive`, indicating whether the selection margin is positive
 - `selection_margin_sign`, one of `positive`, `zero`, or `negative`
 - `selection_margin_source`, currently `dynamic_diff`
+- `common_rival_label`, the Dynamic-Diff-selected rival label shared by all methods
 
 `dynamic_fpde_summary_positive_margin_by_method.csv` filters samples with
 `selection_margin > 0`, not method-specific `prototype_margin > 0`. This keeps
@@ -149,6 +157,14 @@ metrics and should not be interpreted as causal faithfulness scores.
 the ESC-50 training folds. The suite also reports `dynamic_diff`,
 `dynamic_cos`, an RMS energy ranking baseline, and a seeded random ranking
 baseline.
+
+In pilot and full modes, `dynamic_fpde_sample_metrics.csv` keeps every
+`random_baseline` repetition with `aggregation_unit=sample_repetition`.
+Method-level summaries and LaTeX tables first average random repetitions to
+one `aggregation_unit=sample` row per sample. Summary CSVs report `n` and
+`n_unique_samples` as the effective sample-level count, `n_rows` as the number
+of underlying rows represented, and `random_repetitions_mean` for random
+baseline transparency.
 
 ## LaTeX Tables
 

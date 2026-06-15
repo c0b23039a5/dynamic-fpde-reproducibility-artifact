@@ -40,13 +40,102 @@ def _stats(values: list[float]) -> dict[str, float | int | str]:
     return {"mean": mean, "std": variance**0.5, "median": median(values), "n": len(values)}
 
 
+def average_random_repetitions(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    """Average random-baseline repetition rows to one row per sample.
+
+    The sample metrics CSV keeps every random repetition. Method summaries use
+    this helper so random_baseline has the same effective sample count as the
+    Dynamic-FPDE methods and the energy ranking baseline.
+    """
+
+    passthrough: list[dict[str, object]] = []
+    random_groups: dict[tuple[str, str, str, str, str], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        if str(row.get("method")) != "random_baseline":
+            copied = dict(row)
+            copied.setdefault("aggregation_unit", "sample")
+            copied.setdefault("n_underlying_rows", 1)
+            copied.setdefault("random_repetitions", "")
+            passthrough.append(copied)
+            continue
+        key = (
+            str(row.get("dataset", "")),
+            str(row.get("fold", "")),
+            str(row.get("seed", "")),
+            str(row.get("sample_id", "")),
+            str(row.get("method", "")),
+        )
+        random_groups[key].append(row)
+
+    averaged: list[dict[str, object]] = []
+    for group_rows in random_groups.values():
+        base = dict(group_rows[0])
+        for metric in SUMMARY_METRICS:
+            values = [value for row in group_rows if (value := _to_float(row.get(metric))) is not None]
+            if values:
+                base[metric] = sum(values) / len(values)
+        for metric in ("T", "F"):
+            values = [value for row in group_rows if (value := _to_float(row.get(metric))) is not None]
+            if values:
+                base[metric] = int(round(sum(values) / len(values)))
+        prototype_margin = _to_float(base.get("prototype_margin"))
+        selection_margin = _to_float(base.get("selection_margin"))
+        if prototype_margin is not None:
+            base["prototype_margin_positive"] = prototype_margin > 0.0
+            base["prototype_margin_sign"] = _margin_sign(prototype_margin)
+        if selection_margin is not None:
+            base["selection_margin_positive"] = selection_margin > 0.0
+            base["selection_margin_sign"] = _margin_sign(selection_margin)
+        base["random_repetition"] = ""
+        base["aggregation_unit"] = "sample"
+        base["n_underlying_rows"] = len(group_rows)
+        base["random_repetitions"] = len(group_rows)
+        averaged.append(base)
+    return sorted(
+        passthrough + averaged,
+        key=lambda row: (
+            str(row.get("dataset", "")),
+            str(row.get("fold", "")),
+            str(row.get("sample_id", "")),
+            str(row.get("method", "")),
+        ),
+    )
+
+
+def _margin_sign(value: float) -> str:
+    if value > 0.0:
+        return "positive"
+    if value < 0.0:
+        return "negative"
+    return "zero"
+
+
 def aggregate_by_method(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     groups: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         groups[(str(row["dataset"]), str(row["fold"]), str(row["method"]))].append(row)
     out: list[dict[str, object]] = []
     for (dataset, fold, method), group_rows in sorted(groups.items()):
-        summary: dict[str, object] = {"dataset": dataset, "fold": fold, "method": method, "n": len(group_rows)}
+        sample_ids = {str(row.get("sample_id", idx)) for idx, row in enumerate(group_rows)}
+        underlying_counts = [
+            int(value)
+            for row in group_rows
+            if (value := _to_float(row.get("n_underlying_rows"))) is not None
+        ]
+        random_repetitions = [
+            value
+            for row in group_rows
+            if (value := _to_float(row.get("random_repetitions"))) is not None
+        ]
+        summary: dict[str, object] = {
+            "dataset": dataset,
+            "fold": fold,
+            "method": method,
+            "n": len(group_rows),
+            "n_unique_samples": len(sample_ids),
+            "n_rows": sum(underlying_counts) if underlying_counts else len(group_rows),
+            "random_repetitions_mean": (sum(random_repetitions) / len(random_repetitions)) if random_repetitions else "",
+        }
         for metric in SUMMARY_METRICS:
             values = [value for row in group_rows if (value := _to_float(row.get(metric))) is not None]
             stats = _stats(values)

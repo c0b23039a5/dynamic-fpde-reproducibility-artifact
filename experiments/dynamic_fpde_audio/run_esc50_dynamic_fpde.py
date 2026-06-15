@@ -22,7 +22,13 @@ from fpde import (
     temporal_deletion_insertion_curves,
 )
 
-from experiments.dynamic_fpde_audio.aggregate import aggregate_additivity, aggregate_by_method, positive_margin_rows, write_csv
+from experiments.dynamic_fpde_audio.aggregate import (
+    aggregate_additivity,
+    aggregate_by_method,
+    average_random_repetitions,
+    positive_margin_rows,
+    write_csv,
+)
 from experiments.dynamic_fpde_audio.baselines import energy_frame_scores, random_frame_scores
 from experiments.dynamic_fpde_audio.datasets import (
     ESCSample,
@@ -44,6 +50,7 @@ SAMPLE_FIELDS = [
     "true_label",
     "target_label",
     "rival_label",
+    "common_rival_label",
     "method",
     "lambda_hyb",
     "evidence",
@@ -66,6 +73,7 @@ SAMPLE_FIELDS = [
     "T",
     "F",
     "random_repetition",
+    "aggregation_unit",
 ]
 
 
@@ -171,6 +179,7 @@ def _row_from_result(
         "true_label": sample.category,
         "target_label": explanation.target_label,
         "rival_label": explanation.rival_label,
+        "common_rival_label": selection_explanation.rival_label,
         "method": method,
         "lambda_hyb": lambda_hyb,
         "evidence": float(explanation.evidence),
@@ -193,6 +202,7 @@ def _row_from_result(
         "T": int(explanation.attributions.shape[0]),
         "F": int(explanation.attributions.shape[1]),
         "random_repetition": random_repetition,
+        "aggregation_unit": "sample_repetition" if random_repetition != "" else "sample",
     }
 
 
@@ -210,6 +220,7 @@ def _explain_and_score(
     *,
     sample: ESCSample,
     mode: str,
+    rival_label: str | None,
     lambda_hyb: float = 0.5,
     steps: int,
 ) -> tuple[DynamicFPDEExplanation, dict[str, Any], float]:
@@ -218,7 +229,7 @@ def _explain_and_score(
         X,
         context,
         target_label=sample.category,
-        rival_label=None,
+        rival_label=rival_label,
         mode=mode,
         lambda_hyb=lambda_hyb,
     )
@@ -240,10 +251,11 @@ def _score_baseline(
     sample: ESCSample,
     scores: np.ndarray,
     method: str,
+    rival_label: str | None,
     steps: int,
 ) -> tuple[DynamicFPDEExplanation, dict[str, Any], float]:
     start = time.perf_counter()
-    base = dynamic_fpde_explain_one(X, context, target_label=sample.category, rival_label=None, mode="dynamic_diff")
+    base = dynamic_fpde_explain_one(X, context, target_label=sample.category, rival_label=rival_label, mode="dynamic_diff")
     explanation = _baseline_explanation(base, scores, method=method)
     curves = temporal_deletion_insertion_curves(
         X,
@@ -354,8 +366,16 @@ def run_fold(
             rival_label=None,
             mode="dynamic_diff",
         )
+        common_rival_label = selection_explanation.rival_label
         for method in ("dynamic_diff", "dynamic_cos"):
-            explanation, curves, runtime = _explain_and_score(X, context, sample=sample, mode=method, steps=steps)
+            explanation, curves, runtime = _explain_and_score(
+                X,
+                context,
+                sample=sample,
+                mode=method,
+                rival_label=common_rival_label,
+                steps=steps,
+            )
             sample_rows.append(
                 _row_from_result(
                     fold=fold,
@@ -375,6 +395,7 @@ def run_fold(
             context,
             sample=sample,
             mode="dynamic_hyb",
+            rival_label=common_rival_label,
             lambda_hyb=selected_lambda,
             steps=steps,
         )
@@ -395,7 +416,15 @@ def run_fold(
         )
 
         energy_scores = energy_frame_scores(raw_X, feature_names)
-        explanation, curves, runtime = _score_baseline(X, context, sample=sample, scores=energy_scores, method="energy_baseline", steps=steps)
+        explanation, curves, runtime = _score_baseline(
+            X,
+            context,
+            sample=sample,
+            scores=energy_scores,
+            method="energy_baseline",
+            rival_label=common_rival_label,
+            steps=steps,
+        )
         sample_rows.append(
             _row_from_result(
                 fold=fold,
@@ -416,7 +445,15 @@ def run_fold(
                 seed=_stable_sample_seed(seed, sample.sample_id),
                 repetition=repetition,
             )
-            explanation, curves, runtime = _score_baseline(X, context, sample=sample, scores=random_scores, method="random_baseline", steps=steps)
+            explanation, curves, runtime = _score_baseline(
+                X,
+                context,
+                sample=sample,
+                scores=random_scores,
+                method="random_baseline",
+                rival_label=common_rival_label,
+                steps=steps,
+            )
             sample_rows.append(
                 _row_from_result(
                     fold=fold,
@@ -462,7 +499,7 @@ def _maybe_write_figures(output_dir: Path, sample_rows: list[dict[str, object]],
     except ImportError as exc:
         print(f"Skipping optional figures: {exc}", file=sys.stderr)
         return
-    summary_rows = aggregate_by_method(sample_rows)
+    summary_rows = aggregate_by_method(average_random_repetitions(sample_rows))
     figures_dir = output_dir / "figures"
     try:
         save_combined_score_plot(summary_rows, figures_dir / "combined_score_by_method")
@@ -563,11 +600,12 @@ def main(argv: list[str] | None = None) -> int:
         all_errors.extend(errors)
 
     results_dir = output_dir / "results"
+    summary_rows = average_random_repetitions(all_sample_rows)
     write_csv(results_dir / "dynamic_fpde_sample_metrics.csv", all_sample_rows, SAMPLE_FIELDS)
-    write_csv(results_dir / "dynamic_fpde_summary_by_method.csv", aggregate_by_method(all_sample_rows))
+    write_csv(results_dir / "dynamic_fpde_summary_by_method.csv", aggregate_by_method(summary_rows))
     write_csv(
         results_dir / "dynamic_fpde_summary_positive_margin_by_method.csv",
-        aggregate_by_method(positive_margin_rows(all_sample_rows)),
+        aggregate_by_method(positive_margin_rows(summary_rows)),
     )
     write_csv(results_dir / "dynamic_fpde_lambda_selection.csv", all_lambda_rows)
     write_csv(results_dir / "dynamic_fpde_additivity_summary.csv", aggregate_additivity(all_sample_rows))

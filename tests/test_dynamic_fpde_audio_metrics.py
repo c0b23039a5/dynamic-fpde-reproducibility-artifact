@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from experiments.dynamic_fpde_audio.aggregate import aggregate_additivity, aggregate_by_method, positive_margin_rows, write_csv
+from experiments.dynamic_fpde_audio.aggregate import (
+    aggregate_additivity,
+    aggregate_by_method,
+    average_random_repetitions,
+    positive_margin_rows,
+    write_csv,
+)
 from experiments.dynamic_fpde_audio.tables import generate_tables
 
 
@@ -65,6 +71,9 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
     assert hyb["combined_score_mean"] == pytest.approx(0.6)
     assert hyb["combined_score_median"] == pytest.approx(0.6)
     assert hyb["n"] == 2
+    assert hyb["n_unique_samples"] == 2
+    assert hyb["n_rows"] == 2
+    assert hyb["random_repetitions_mean"] == ""
     assert hyb["prototype_margin_mean"] == pytest.approx(-1.0)
     assert hyb["prototype_margin_median"] == pytest.approx(-1.0)
     assert hyb["prototype_margin_positive_rate"] == pytest.approx(0.5)
@@ -130,6 +139,68 @@ def test_selection_positive_margin_summary_uses_same_sample_count_per_method():
     }
 
 
+def test_random_baseline_repetitions_are_averaged_before_method_summary():
+    rows = [
+        {
+            "dataset": "esc50",
+            "fold": 1,
+            "seed": 0,
+            "sample_id": "a",
+            "method": "dynamic_diff",
+            "prototype_margin": 2.0,
+            "selection_margin": 2.0,
+            "combined_score": 0.6,
+            "deletion_drop_auc": 0.5,
+            "insertion_gain_auc": 0.7,
+            "runtime_sec": 0.1,
+        },
+        {
+            "dataset": "esc50",
+            "fold": 1,
+            "seed": 0,
+            "sample_id": "a",
+            "method": "random_baseline",
+            "prototype_margin": 2.0,
+            "selection_margin": 2.0,
+            "combined_score": 0.2,
+            "deletion_drop_auc": 0.1,
+            "insertion_gain_auc": 0.3,
+            "runtime_sec": 0.2,
+            "random_repetition": 0,
+            "aggregation_unit": "sample_repetition",
+        },
+        {
+            "dataset": "esc50",
+            "fold": 1,
+            "seed": 0,
+            "sample_id": "a",
+            "method": "random_baseline",
+            "prototype_margin": 4.0,
+            "selection_margin": 2.0,
+            "combined_score": 0.8,
+            "deletion_drop_auc": 0.7,
+            "insertion_gain_auc": 0.9,
+            "runtime_sec": 0.4,
+            "random_repetition": 1,
+            "aggregation_unit": "sample_repetition",
+        },
+    ]
+
+    averaged = average_random_repetitions(rows)
+    summary = aggregate_by_method(averaged)
+    random_row = next(row for row in averaged if row["method"] == "random_baseline")
+    random_summary = next(row for row in summary if row["method"] == "random_baseline")
+
+    assert random_row["aggregation_unit"] == "sample"
+    assert random_row["combined_score"] == pytest.approx(0.5)
+    assert random_row["prototype_margin"] == pytest.approx(3.0)
+    assert random_summary["n"] == 1
+    assert random_summary["n_unique_samples"] == 1
+    assert random_summary["n_rows"] == 2
+    assert random_summary["random_repetitions_mean"] == pytest.approx(2.0)
+    assert random_summary["combined_score_mean"] == pytest.approx(0.5)
+
+
 def test_latex_table_generation_reads_csv_values(tmp_path: Path):
     results = tmp_path / "results"
     tables = tmp_path / "tables"
@@ -154,6 +225,8 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
                 "deletion_drop_auc_mean": 0.7,
                 "insertion_gain_auc_mean": 0.8,
                 "n": 2,
+                "n_unique_samples": 2,
+                "n_rows": 2,
             }
         ],
     )
@@ -178,6 +251,8 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
                 "deletion_drop_auc_mean": 0.7,
                 "insertion_gain_auc_mean": 0.8,
                 "n": 2,
+                "n_unique_samples": 2,
+                "n_rows": 2,
             }
         ],
     )
@@ -213,6 +288,8 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
     assert "\\toprule" in main_text
     assert "dynamic\\_hyb" in main_text
     assert "0.7500" in main_text
+    assert "Unique N" in main_text
+    assert "Rows" in main_text
     margin_text = (tables / "table_dynamic_fpde_margin_summary.tex").read_text(encoding="utf-8")
     assert "Selection Positive Rate" in margin_text
     assert "1.0000" in margin_text

@@ -53,7 +53,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
     main_path = tables / "table_dynamic_fpde_main_results.tex"
     _write_table(
         main_path,
-        ["Dataset", "Fold", "Method", "Combined", "Deletion", "Insertion", "N"],
+        ["Dataset", "Fold", "Method", "Combined", "Deletion", "Insertion", "Unique N", "Rows"],
         [
             [
                 row.get("dataset"),
@@ -62,11 +62,12 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
                 row.get("combined_score_mean"),
                 row.get("deletion_drop_auc_mean"),
                 row.get("insertion_gain_auc_mean"),
-                row.get("n"),
+                row.get("n_unique_samples") or row.get("n"),
+                row.get("n_rows") or row.get("n"),
             ]
             for row in summary
         ],
-        "Dynamic-FPDE all-sample prototype-driven deletion and insertion results.",
+        "Dynamic-FPDE all-sample prototype-driven deletion and insertion results; random baseline repetitions are averaged per sample.",
         "tab:dynamic-fpde-main-results",
     )
     written.append(main_path)
@@ -74,7 +75,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
     positive_path = tables / "table_dynamic_fpde_positive_margin_results.tex"
     _write_table(
         positive_path,
-        ["Dataset", "Fold", "Method", "Combined", "Deletion", "Insertion", "N"],
+        ["Dataset", "Fold", "Method", "Combined", "Deletion", "Insertion", "Unique N", "Rows"],
         [
             [
                 row.get("dataset"),
@@ -83,11 +84,12 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
                 row.get("combined_score_mean"),
                 row.get("deletion_drop_auc_mean"),
                 row.get("insertion_gain_auc_mean"),
-                row.get("n"),
+                row.get("n_unique_samples") or row.get("n"),
+                row.get("n_rows") or row.get("n"),
             ]
             for row in positive_summary
         ],
-        "Dynamic-FPDE results for samples with positive common Dynamic-Diff selection margin.",
+        "Dynamic-FPDE selection-positive-margin results using the common Dynamic-Diff target/rival pair; random repetitions are averaged per sample.",
         "tab:dynamic-fpde-positive-margin-results",
     )
     written.append(positive_path)

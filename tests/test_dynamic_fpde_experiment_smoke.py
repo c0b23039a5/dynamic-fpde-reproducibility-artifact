@@ -152,13 +152,16 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "selection_margin_positive",
         "selection_margin_sign",
         "selection_margin_source",
+        "common_rival_label",
         "evaluation_evidence",
         "evaluation_margin",
         "evidence_role",
+        "aggregation_unit",
     }.issubset(rows[0])
     assert {row["prototype_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
     assert {row["selection_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
     assert {row["selection_margin_source"] for row in rows} == {"dynamic_diff"}
+    assert {row["aggregation_unit"] for row in rows} == {"sample", "sample_repetition"}
     assert all(row["prototype_margin"] == row["evidence"] for row in rows)
     baseline_rows = [row for row in rows if row["method"].endswith("_baseline")]
     assert baseline_rows
@@ -173,8 +176,22 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "random_baseline",
     }
     assert all(row["T"] and row["F"] for row in rows)
+    for sample_id in {row["sample_id"] for row in rows}:
+        sample_group = [row for row in rows if row["sample_id"] == sample_id]
+        assert len({row["target_label"] for row in sample_group}) == 1
+        assert len({row["rival_label"] for row in sample_group}) == 1
+        assert {row["rival_label"] for row in sample_group} == {row["common_rival_label"] for row in sample_group}
+        assert len({row["selection_margin"] for row in sample_group}) == 1
 
     with positive_summary.open("r", encoding="utf-8", newline="") as handle:
         positive_rows = list(csv.DictReader(handle))
     positive_counts = {row["method"]: int(row["n"]) for row in positive_rows}
     assert len(set(positive_counts.values())) == 1
+
+    with summary.open("r", encoding="utf-8", newline="") as handle:
+        summary_rows = list(csv.DictReader(handle))
+    assert {"n_unique_samples", "n_rows", "random_repetitions_mean"}.issubset(summary_rows[0])
+    random_summary = next(row for row in summary_rows if row["method"] == "random_baseline")
+    assert int(random_summary["n"]) == int(random_summary["n_unique_samples"])
+    assert int(random_summary["n_rows"]) == int(random_summary["n_unique_samples"])
+    assert float(random_summary["random_repetitions_mean"]) == pytest.approx(1.0)

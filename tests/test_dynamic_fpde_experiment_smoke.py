@@ -25,8 +25,20 @@ def test_project_installs_fpde_from_dynamic_branch():
     deps = pyproject["project"]["dependencies"]
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in deps
     assert "librosa" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
+    assert "matplotlib" in pyproject["project"]["optional-dependencies"]["plot"]
+    assert "openml" not in pyproject["project"]["optional-dependencies"]
+    assert "baselines" not in pyproject["project"]["optional-dependencies"]
+    assert pyproject["tool"]["setuptools"]["packages"]["find"]["include"] == ["experiments*"]
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in (ROOT / "requirements.txt").read_text(encoding="utf-8")
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in (ROOT / "environment.yml").read_text(encoding="utf-8")
+
+
+def test_cli_accepts_comma_separated_folds():
+    from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import build_parser
+
+    args = build_parser().parse_args(["--dataset-root", "ESC-50", "--folds", "1,2,3,4,5"])
+
+    assert args.folds == "1,2,3,4,5"
 
 
 def test_gitignore_excludes_dynamic_audio_feature_cache_paths():
@@ -132,9 +144,27 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
 
     with sample_metrics.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert {"prototype_margin", "prototype_margin_positive", "prototype_margin_sign"}.issubset(rows[0])
+    assert {
+        "prototype_margin",
+        "prototype_margin_positive",
+        "prototype_margin_sign",
+        "selection_margin",
+        "selection_margin_positive",
+        "selection_margin_sign",
+        "selection_margin_source",
+        "evaluation_evidence",
+        "evaluation_margin",
+        "evidence_role",
+    }.issubset(rows[0])
     assert {row["prototype_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
+    assert {row["selection_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
+    assert {row["selection_margin_source"] for row in rows} == {"dynamic_diff"}
     assert all(row["prototype_margin"] == row["evidence"] for row in rows)
+    baseline_rows = [row for row in rows if row["method"].endswith("_baseline")]
+    assert baseline_rows
+    assert {row["evidence_role"] for row in baseline_rows} == {"evaluation_margin"}
+    assert all(row["evaluation_evidence"] == row["evidence"] for row in baseline_rows)
+    assert all(row["evaluation_margin"] == row["prototype_margin"] for row in baseline_rows)
     assert {row["method"] for row in rows} == {
         "dynamic_diff",
         "dynamic_cos",
@@ -143,3 +173,8 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "random_baseline",
     }
     assert all(row["T"] and row["F"] for row in rows)
+
+    with positive_summary.open("r", encoding="utf-8", newline="") as handle:
+        positive_rows = list(csv.DictReader(handle))
+    positive_counts = {row["method"]: int(row["n"]) for row in positive_rows}
+    assert len(set(positive_counts.values())) == 1

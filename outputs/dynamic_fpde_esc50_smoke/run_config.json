@@ -1,6 +1,6 @@
 {
   "dataset": "esc50",
-  "dataset_root": "ESC-50",
+  "dataset_root": "data\\ESC-50",
   "folds": [
     1
   ],

@@ -66,7 +66,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in summary
         ],
-        "Dynamic-FPDE prototype-driven deletion and insertion results.",
+        "Dynamic-FPDE all-sample prototype-driven deletion and insertion results.",
         "tab:dynamic-fpde-main-results",
     )
     written.append(main_path)
@@ -87,7 +87,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in positive_summary
         ],
-        "Dynamic-FPDE results for samples with positive prototype evidence margin.",
+        "Dynamic-FPDE results for samples with positive common Dynamic-Diff selection margin.",
         "tab:dynamic-fpde-positive-margin-results",
     )
     written.append(positive_path)
@@ -95,21 +95,32 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
     margin_path = tables / "table_dynamic_fpde_margin_summary.tex"
     _write_table(
         margin_path,
-        ["Dataset", "Fold", "Method", "Margin Mean", "Margin Median", "Positive Rate", "N+", "N-"],
+        [
+            "Dataset",
+            "Fold",
+            "Method",
+            "Method Margin",
+            "Method Positive Rate",
+            "Selection Margin",
+            "Selection Positive Rate",
+            "Sel. N+",
+            "Sel. N-",
+        ],
         [
             [
                 row.get("dataset"),
                 row.get("fold"),
                 row.get("method"),
                 row.get("prototype_margin_mean"),
-                row.get("prototype_margin_median"),
                 row.get("prototype_margin_positive_rate"),
-                row.get("n_positive_margin"),
-                row.get("n_negative_margin"),
+                row.get("selection_margin_mean"),
+                row.get("selection_margin_positive_rate"),
+                row.get("n_selection_positive_margin"),
+                row.get("n_selection_negative_margin"),
             ]
             for row in summary
         ],
-        "Prototype evidence margin summary by Dynamic-FPDE method or baseline.",
+        "Method-specific prototype margins and common Dynamic-Diff selection margins by method.",
         "tab:dynamic-fpde-margin-summary",
     )
     written.append(margin_path)

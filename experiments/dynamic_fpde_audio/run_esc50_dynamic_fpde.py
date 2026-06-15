@@ -47,9 +47,16 @@ SAMPLE_FIELDS = [
     "method",
     "lambda_hyb",
     "evidence",
+    "evidence_role",
+    "evaluation_evidence",
+    "evaluation_margin",
     "prototype_margin",
     "prototype_margin_positive",
     "prototype_margin_sign",
+    "selection_margin",
+    "selection_margin_positive",
+    "selection_margin_sign",
+    "selection_margin_source",
     "exactness_residual",
     "abs_exactness_residual",
     "deletion_drop_auc",
@@ -145,18 +152,17 @@ def _row_from_result(
     method: str,
     lambda_hyb: float | str,
     explanation: DynamicFPDEExplanation,
+    selection_explanation: DynamicFPDEExplanation,
     curves: dict[str, Any],
     runtime_sec: float,
     random_repetition: int | str = "",
 ) -> dict[str, object]:
     residual = "" if not np.isfinite(explanation.exactness_residual) else float(explanation.exactness_residual)
     prototype_margin = float(explanation.evidence)
-    if prototype_margin > 0.0:
-        margin_sign = "positive"
-    elif prototype_margin < 0.0:
-        margin_sign = "negative"
-    else:
-        margin_sign = "zero"
+    selection_margin = float(selection_explanation.evidence)
+    margin_sign = _margin_sign(prototype_margin)
+    selection_margin_sign = _margin_sign(selection_margin)
+    evidence_role = "evaluation_margin" if method.endswith("_baseline") else "explanation_margin"
     return {
         "dataset": "esc50",
         "fold": int(fold),
@@ -168,9 +174,16 @@ def _row_from_result(
         "method": method,
         "lambda_hyb": lambda_hyb,
         "evidence": float(explanation.evidence),
+        "evidence_role": evidence_role,
+        "evaluation_evidence": float(explanation.evidence),
+        "evaluation_margin": float(explanation.evidence),
         "prototype_margin": prototype_margin,
         "prototype_margin_positive": bool(prototype_margin > 0.0),
         "prototype_margin_sign": margin_sign,
+        "selection_margin": selection_margin,
+        "selection_margin_positive": bool(selection_margin > 0.0),
+        "selection_margin_sign": selection_margin_sign,
+        "selection_margin_source": "dynamic_diff",
         "exactness_residual": residual,
         "abs_exactness_residual": "" if residual == "" else abs(float(residual)),
         "deletion_drop_auc": float(curves["deletion_drop_auc"]),
@@ -181,6 +194,14 @@ def _row_from_result(
         "F": int(explanation.attributions.shape[1]),
         "random_repetition": random_repetition,
     }
+
+
+def _margin_sign(value: float) -> str:
+    if value > 0.0:
+        return "positive"
+    if value < 0.0:
+        return "negative"
+    return "zero"
 
 
 def _explain_and_score(
@@ -326,6 +347,13 @@ def run_fold(
     for sample in test_samples:
         X = standardized[sample.sample_id]
         raw_X = raw_features[sample.sample_id]
+        selection_explanation = dynamic_fpde_explain_one(
+            X,
+            context,
+            target_label=sample.category,
+            rival_label=None,
+            mode="dynamic_diff",
+        )
         for method in ("dynamic_diff", "dynamic_cos"):
             explanation, curves, runtime = _explain_and_score(X, context, sample=sample, mode=method, steps=steps)
             sample_rows.append(
@@ -336,6 +364,7 @@ def run_fold(
                     method=method,
                     lambda_hyb="",
                     explanation=explanation,
+                    selection_explanation=selection_explanation,
                     curves=curves,
                     runtime_sec=runtime,
                 )
@@ -359,6 +388,7 @@ def run_fold(
                 method="dynamic_hyb",
                 lambda_hyb=selected_lambda,
                 explanation=explanation,
+                selection_explanation=selection_explanation,
                 curves=curves,
                 runtime_sec=runtime,
             )
@@ -374,6 +404,7 @@ def run_fold(
                 method="energy_baseline",
                 lambda_hyb="",
                 explanation=explanation,
+                selection_explanation=selection_explanation,
                 curves=curves,
                 runtime_sec=runtime,
             )
@@ -394,6 +425,7 @@ def run_fold(
                     method="random_baseline",
                     lambda_hyb="",
                     explanation=explanation,
+                    selection_explanation=selection_explanation,
                     curves=curves,
                     runtime_sec=runtime,
                     random_repetition=repetition,

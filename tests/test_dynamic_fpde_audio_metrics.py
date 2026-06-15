@@ -16,6 +16,9 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
             "method": "dynamic_hyb",
             "evidence": 1.0,
             "prototype_margin": 1.0,
+            "selection_margin": 4.0,
+            "evaluation_evidence": 1.0,
+            "evaluation_margin": 1.0,
             "abs_exactness_residual": 0.01,
             "deletion_drop_auc": 0.4,
             "insertion_gain_auc": 0.6,
@@ -28,6 +31,9 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
             "method": "dynamic_hyb",
             "evidence": 3.0,
             "prototype_margin": -3.0,
+            "selection_margin": -4.0,
+            "evaluation_evidence": 3.0,
+            "evaluation_margin": 3.0,
             "abs_exactness_residual": 0.03,
             "deletion_drop_auc": 0.6,
             "insertion_gain_auc": 0.8,
@@ -40,6 +46,9 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
             "method": "energy_baseline",
             "evidence": 2.0,
             "prototype_margin": 2.0,
+            "selection_margin": 4.0,
+            "evaluation_evidence": 2.0,
+            "evaluation_margin": 2.0,
             "abs_exactness_residual": "",
             "deletion_drop_auc": 0.2,
             "insertion_gain_auc": 0.4,
@@ -61,16 +70,21 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
     assert hyb["prototype_margin_positive_rate"] == pytest.approx(0.5)
     assert hyb["n_positive_margin"] == 1
     assert hyb["n_negative_margin"] == 1
+    assert hyb["selection_margin_mean"] == pytest.approx(0.0)
+    assert hyb["selection_margin_median"] == pytest.approx(0.0)
+    assert hyb["selection_margin_positive_rate"] == pytest.approx(0.5)
+    assert hyb["n_selection_positive_margin"] == 1
+    assert hyb["n_selection_negative_margin"] == 1
     assert energy["abs_exactness_residual_n"] == 0
     assert additivity[0]["abs_exactness_residual_mean"] == pytest.approx(0.02)
     assert additivity[0]["abs_exactness_residual_std"] == pytest.approx(0.01)
 
 
-def test_positive_margin_summary_filters_rows():
+def test_positive_margin_summary_filters_on_selection_margin_not_method_margin():
     rows = [
-        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": 1.0, "combined_score": 0.7},
-        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": 0.0, "combined_score": 0.5},
-        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": -1.0, "combined_score": 0.3},
+        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": -1.0, "selection_margin": 2.0, "combined_score": 0.7},
+        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": 3.0, "selection_margin": 0.0, "combined_score": 0.5},
+        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": 4.0, "selection_margin": -1.0, "combined_score": 0.3},
     ]
 
     positive_rows = positive_margin_rows(rows)
@@ -79,7 +93,41 @@ def test_positive_margin_summary_filters_rows():
     assert len(positive_rows) == 1
     assert positive_rows[0]["combined_score"] == pytest.approx(0.7)
     assert summary[0]["n"] == 1
-    assert summary[0]["prototype_margin_positive_rate"] == pytest.approx(1.0)
+    assert summary[0]["prototype_margin_positive_rate"] == pytest.approx(0.0)
+    assert summary[0]["selection_margin_positive_rate"] == pytest.approx(1.0)
+
+
+def test_selection_positive_margin_summary_uses_same_sample_count_per_method():
+    rows = []
+    for sample_id, selection_margin in [("a", 1.0), ("b", -1.0), ("c", 2.0)]:
+        for method, prototype_margin in [
+            ("dynamic_diff", selection_margin),
+            ("dynamic_cos", -selection_margin),
+            ("dynamic_hyb", selection_margin / 2.0),
+            ("energy_baseline", -selection_margin),
+            ("random_baseline", selection_margin),
+        ]:
+            rows.append(
+                {
+                    "dataset": "esc50",
+                    "fold": 1,
+                    "sample_id": sample_id,
+                    "method": method,
+                    "prototype_margin": prototype_margin,
+                    "selection_margin": selection_margin,
+                    "combined_score": 0.5,
+                }
+            )
+
+    summary = aggregate_by_method(positive_margin_rows(rows))
+
+    assert {row["method"]: row["n"] for row in summary} == {
+        "dynamic_diff": 2,
+        "dynamic_cos": 2,
+        "dynamic_hyb": 2,
+        "energy_baseline": 2,
+        "random_baseline": 2,
+    }
 
 
 def test_latex_table_generation_reads_csv_values(tmp_path: Path):
@@ -97,6 +145,11 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
                 "prototype_margin_positive_rate": 1.0,
                 "n_positive_margin": 2,
                 "n_negative_margin": 0,
+                "selection_margin_mean": 0.4,
+                "selection_margin_median": 0.4,
+                "selection_margin_positive_rate": 1.0,
+                "n_selection_positive_margin": 2,
+                "n_selection_negative_margin": 0,
                 "combined_score_mean": 0.75,
                 "deletion_drop_auc_mean": 0.7,
                 "insertion_gain_auc_mean": 0.8,
@@ -116,6 +169,11 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
                 "prototype_margin_positive_rate": 1.0,
                 "n_positive_margin": 2,
                 "n_negative_margin": 0,
+                "selection_margin_mean": 0.4,
+                "selection_margin_median": 0.4,
+                "selection_margin_positive_rate": 1.0,
+                "n_selection_positive_margin": 2,
+                "n_selection_negative_margin": 0,
                 "combined_score_mean": 0.75,
                 "deletion_drop_auc_mean": 0.7,
                 "insertion_gain_auc_mean": 0.8,
@@ -156,7 +214,7 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
     assert "dynamic\\_hyb" in main_text
     assert "0.7500" in main_text
     margin_text = (tables / "table_dynamic_fpde_margin_summary.tex").read_text(encoding="utf-8")
-    assert "Positive Rate" in margin_text
+    assert "Selection Positive Rate" in margin_text
     assert "1.0000" in margin_text
 
 

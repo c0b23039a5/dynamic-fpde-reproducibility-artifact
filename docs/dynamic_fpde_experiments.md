@@ -35,11 +35,8 @@ dataset license.
 ## Install
 
 ```bash
-python -m pip install -e ".[dev,dynamic-audio]"
+python -m pip install -e ".[dev,dynamic-audio,plot]"
 ```
-
-For the broad existing OpenML artifact dependencies, continue to use the
-existing `openml` and `baselines` extras as needed.
 
 ## Run Smoke Mode
 
@@ -69,6 +66,9 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
 ```
 
 ## Run Full 5-Fold Mode
+
+`--folds` accepts a comma-separated ESC-50 fold list and runs each fold in the
+same invocation.
 
 ```bash
 python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
@@ -115,11 +115,30 @@ auditable attribution sum residual, deletion AUC, insertion AUC, and a combined
 score. The deletion/insertion metrics are prototype-driven and normalized. They
 are computed from prototype-evidence curves rather than class probabilities.
 
-The runner also records prototype-margin diagnostics:
+The runner records method-specific prototype-margin diagnostics:
 
 - `prototype_margin`, equal to the Dynamic-FPDE prototype evidence value
 - `prototype_margin_positive`, indicating whether the margin is positive
 - `prototype_margin_sign`, one of `positive`, `zero`, or `negative`
+
+It also records a method-independent selection margin:
+
+- `selection_margin`, the common Dynamic-Diff target-vs-rival prototype margin
+- `selection_margin_positive`, indicating whether the selection margin is positive
+- `selection_margin_sign`, one of `positive`, `zero`, or `negative`
+- `selection_margin_source`, currently `dynamic_diff`
+
+`dynamic_fpde_summary_positive_margin_by_method.csv` filters samples with
+`selection_margin > 0`, not method-specific `prototype_margin > 0`. This keeps
+Dynamic-Diff, Dynamic-Cos, Dynamic-Hyb, energy baseline, and random baseline
+summaries on the same comparable sample set.
+
+Energy and random baselines provide frame rankings only. They do not have their
+own attribution evidence. Their `evidence` and `prototype_margin` fields are
+retained for CSV compatibility and represent evaluation margins from the
+common prototype-evidence evaluator, not baseline explanation margins. The
+explicit `evaluation_evidence`, `evaluation_margin`, and `evidence_role`
+columns make this distinction machine-readable.
 
 Because Dynamic-FPDE evidence is additive, deletion and insertion curves may be
 symmetric or identical after normalization. They are useful as temporal

@@ -13,7 +13,6 @@ dependencies = [
   "pandas",
   "scikit-learn",
   "scipy",
-  "matplotlib",
   "pyyaml",
 ]
 
@@ -22,25 +21,16 @@ dev = [
   "pytest",
   "pyarrow",
 ]
-openml = [
-  "openml",
-  "lightgbm",
-  "pyarrow",
-]
-baselines = [
-  "shap",
-  "lime",
-  "aime-xai",
-  "umap-learn",
-  "seaborn",
-]
 dynamic-audio = [
   "librosa",
   "soundfile",
 ]
+plot = [
+  "matplotlib",
+]
 
 [tool.setuptools.packages.find]
-include = ["bayesian_fpde*", "experiments*"]
+include = ["experiments*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

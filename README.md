@@ -1,114 +1,92 @@
-# Bayesian-FPDE Reproducibility Artifact
+# Dynamic-FPDE Reproducibility Artifact
 
-This repository contains a reproducible experimental pipeline for **Bayesian-FPDE**, an uncertainty-aware prototype-contrast feature attribution method for tabular classification.
+This repository contains reproducible **Dynamic-FPDE** experiments for
+time-resolved prototype-directional audio explanations.
 
-Repository URL:
-
-```text
-https://github.com/c0b23039a5/bayesian-fpde-reproducibility-artifact
-```
-
-## Scope
-
-The main experiments use **public benchmark data**. The default public-data configuration uses **OpenML-CC18**, suite ID `99`.
-
-Public benchmark datasets do not provide ground-truth feature attributions. Therefore, the public-data experiments do not report true attribution coverage or known-truth calibration as main results. Instead, they evaluate whether Bayesian-FPDE uncertainty estimates are consistent with empirical variation across random seeds, resampling runs, model-output perturbations, and training-size changes.
-
-Use the term `empirical_reference_coverage_95` for coverage against a leave-one-seed empirical reference. Do not describe this as true coverage.
+Dynamic-FPDE operates on frame-level acoustic feature matrices and explains
+prototype evidence for a target prototype over a rival prototype. This artifact
+does not implement raw waveform attribution, Delta-Dynamic-FPDE,
+AIME/SHAP/LIME comparisons, recommender-specific logic, or causal
+explanations.
 
 ## Installation
 
+The artifact installs FPDE from the `dynamic` branch of `fpde-xai/fpde`:
+
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -e .[dev]
+python -m pip install -e ".[dev,dynamic-audio,plot]"
 python -m pytest
 ```
 
-For OpenML and optional baselines:
+On this Windows/OneDrive checkout, `uv` may be more reliable:
 
 ```bash
-python -m pip install -e .[dev,openml,baselines]
+uv --system-certs run --link-mode=copy --extra dev --extra dynamic-audio --extra plot python -m pytest
 ```
 
-For the Dynamic-FPDE audio experiment suite, this artifact installs FPDE from
-the `dynamic` branch of `fpde-xai/fpde`:
+## ESC-50 Experiments
+
+The runner expects ESC-50 to be available locally and does not redistribute or
+download the raw dataset.
+
+Smoke run:
 
 ```bash
-python -m pip install -e ".[dev,dynamic-audio]"
+python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
+  --dataset-root data/ESC-50 \
+  --output-dir outputs/dynamic_fpde_esc50_smoke \
+  --mode smoke \
+  --fold 1 \
+  --seed 0 \
+  --prototype-length 64 \
+  --make-figures
 ```
 
-See `docs/dynamic_fpde_experiments.md` for the ESC-50 runner, output files,
-metric definitions, and interpretation limits.
-
-## IEEE Access public-data configuration
-
-```text
-configs/openml_public_ieee_access.yaml
-configs/openml_public_ieee_access_sensitivity.yaml
-```
-
-These configurations define OpenML suite ID `99`, IEEE Access task IDs, seeds, train/test row limits, explanation count, posterior/bootstrap sample counts, top-k, training fractions, and sensitivity grids.
-
-The active GitHub Actions workflows are:
-
-- `.github/workflows/ieee-access-bayesian-fpde-experiments.yml`
-- `.github/workflows/ieee-access-sensitivity.yml`
-- `.github/workflows/artifact-check.yml`
-
-Do not report local smoke or test-mode numbers as paper results.
-
-## Four public-data experiments
-
-| Experiment | Purpose | Main evaluation |
-|---|---|---|
-| Public-data uncertainty validation | Check whether uncertainty estimates align with empirical seed/resampling variation | Empirical reference coverage, uncertainty-error correlation, sign agreement |
-| Stability experiment | Check whether explanations, ranks, signs, and top-k sets are stable across seeds/splits/resampling | Spearman/Pearson correlation, top-k Jaccard, sign agreement |
-| Faithfulness experiment | Check whether replacing important features with a baseline changes model output | Faithfulness correlation, deletion AUC, insertion AUC |
-| Training-size uncertainty | Check whether uncertainty decreases and explanations approach full-training references as training data increases | CI width, posterior std, sign confidence, distance to full-training reference |
-
-## IEEE Access workflow commands
+Full 5-fold run:
 
 ```bash
-python -m pip install -e .[dev,openml]
-python -m pytest
-
-python -m experiments.run_public_uncertainty_validation --config configs/openml_public_ieee_access.yaml --mode ieee_min
-python -m experiments.run_stability --config configs/openml_public_ieee_access.yaml --mode ieee_min
-python -m experiments.run_faithfulness --config configs/openml_public_ieee_access.yaml --mode ieee_min
-python -m experiments.run_training_size_uncertainty --config configs/openml_public_ieee_access.yaml --mode ieee_min
-python -m experiments.aggregate_results --results-dir results_ieee --figures-dir figures_ieee --logs-dir logs_ieee
-
-python experiments/run_sensitivity_analysis.py --config configs/openml_public_ieee_access_sensitivity.yaml --mode sensitivity_smoke
+python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
+  --dataset-root data/ESC-50 \
+  --output-dir outputs/dynamic_fpde_esc50_full \
+  --mode full \
+  --folds 1,2,3,4,5 \
+  --seed 0 \
+  --prototype-length 128 \
+  --make-figures
 ```
 
-## Main outputs
+See `docs/dynamic_fpde_experiments.md` for dataset assumptions, output files,
+metric definitions, margin diagnostics, LaTeX table generation, and
+interpretation limits.
 
-```text
-results_ieee/public_uncertainty_validation.csv
-results_ieee/stability_metrics.csv
-results_ieee/faithfulness_metrics.csv
-results_ieee/training_size_uncertainty.csv
-results_ieee/public_uncertainty_validation_summary.csv
-results_ieee/stability_summary.csv
-results_ieee/faithfulness_summary.csv
-results_ieee/training_size_uncertainty_summary.csv
-results_ieee/statistical_tests.csv
-results_ieee/effect_sizes.csv
-results_ieee/bootstrap_confidence_intervals.csv
-results_ieee_sensitivity/sensitivity_results.csv
-results_ieee_sensitivity/sensitivity_summary.csv
-```
+## Main Outputs
 
-## Metric interpretation
+The ESC-50 runner writes:
 
-- `empirical_reference_coverage_95` is coverage against a leave-one-seed empirical reference, not true attribution coverage.
-- `attribution_distance_to_full_train` is measured against the full-training empirical reference used in the experiment, not against a true attribution. When `max_train_rows` or `max_test_rows` is applied, this means the capped experimental training subset, not necessarily the entire original OpenML dataset.
-- Faithfulness metrics depend on the chosen baseline. The shared evaluation path currently uses the training-set mean as the baseline.
+- `results/dynamic_fpde_sample_metrics.csv`
+- `results/dynamic_fpde_summary_by_method.csv`
+- `results/dynamic_fpde_summary_positive_margin_by_method.csv`
+- `results/dynamic_fpde_lambda_selection.csv`
+- `results/dynamic_fpde_additivity_summary.csv`
+- `tables/table_dynamic_fpde_main_results.tex`
+- `tables/table_dynamic_fpde_positive_margin_results.tex`
+- `tables/table_dynamic_fpde_margin_summary.tex`
+- `tables/table_dynamic_fpde_additivity.tex`
+- `tables/table_dynamic_fpde_lambda.tex`
+
+Feature caches under `outputs/**/cache/features/` are ignored by default
+because they are derived from ESC-50 audio.
 
 ## Citation
 
-If you use this artifact, cite the repository and the associated Bayesian-FPDE manuscript or article when available. Citation metadata is provided in `CITATION.cff`.
+If you use this artifact, cite the repository and the associated Dynamic-FPDE
+paper or manuscript when available. Citation metadata is provided in
+`CITATION.cff`.
 
 ## License
 
-Unless otherwise stated, this repository is distributed under the Apache License 2.0.
+Unless otherwise stated, this repository is distributed under the Apache
+License 2.0. ESC-50 is distributed separately under Creative Commons
+Attribution-NonCommercial terms; follow the dataset license when using raw
+audio or derived feature caches.

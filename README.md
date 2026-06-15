@@ -1,13 +1,19 @@
 # Dynamic-FPDE Reproducibility Artifact
 
-This repository contains reproducible **Dynamic-FPDE** experiments for
-time-resolved prototype-directional audio explanations.
+This repository contains reproducible **Native-Time Dynamic-FPDE** experiments
+for time-resolved prototype-directional audio explanations.
 
-Dynamic-FPDE operates on frame-level acoustic feature matrices and explains
-prototype evidence for a target prototype over a rival prototype. This artifact
-does not implement raw waveform attribution, Delta-Dynamic-FPDE,
-AIME/SHAP/LIME comparisons, recommender-specific logic, or causal
-explanations.
+Native-Time Dynamic-FPDE is the intended Dynamic-FPDE formulation in this
+artifact. It operates on frame-level acoustic feature matrices, not raw
+waveform samples. For each clip, the input is `X_i` with shape `(T_i, F)` and
+the primary output is `Phi_i` with the same shape. Longer clips produce longer
+`Phi_i` matrices. `time_importance` and `feature_importance` are auxiliary
+summaries of `Phi_i`, not replacements for it.
+
+The older resampled-time, `prototype_length`-based Dynamic-FPDE path is legacy
+and benchmark-oriented only. The primary ESC-50 runner rejects
+`--prototype-length` instead of silently falling back to fixed-length temporal
+resampling.
 
 ## Installation
 
@@ -42,11 +48,15 @@ Smoke run:
 ```bash
 python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --dataset-root data/ESC-50 \
-  --output-dir outputs/dynamic_fpde_esc50_smoke \
+  --output-dir outputs/native_time_dynamic_fpde_esc50_smoke \
   --mode smoke \
   --fold 1 \
   --seed 0 \
-  --prototype-length 64 \
+  --prototype-mode exemplar \
+  --prototype-selection nearest_to_class_centroid_frame \
+  --anchor zero \
+  --normalize none \
+  --lambda-hyb 0.5 \
   --backend cpu \
   --make-figures
 ```
@@ -56,30 +66,24 @@ Full 5-fold run:
 ```bash
 python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --dataset-root data/ESC-50 \
-  --output-dir outputs/dynamic_fpde_esc50_full \
+  --output-dir outputs/native_time_dynamic_fpde_esc50_full \
   --mode full \
   --folds 1,2,3,4,5 \
   --seed 0 \
-  --prototype-length 128 \
+  --prototype-mode exemplar \
+  --prototype-selection nearest_to_class_centroid_frame \
+  --anchor zero \
+  --normalize none \
+  --lambda-hyb 0.5 \
   --backend cpu \
   --make-figures
 ```
 
-`--backend` accepts `cpu` or `cuda` and defaults to `cpu`. Feature extraction
-and temporal resampling remain CPU-side for both backends. In CUDA mode, the
-runner batches already-resampled Dynamic-FPDE tensors, evaluates Diff/Cos/Hyb
-attribution tensors with CuPy on the NVIDIA GPU, and converts outputs back to
-NumPy before metrics and CSV writing. If CUDA is requested but CuPy or a usable
-CUDA device is unavailable, the run fails with a clear error instead of falling
-back to CPU.
-
-Runtime excludes CPU feature extraction and CPU temporal resampling unless
-otherwise stated. CUDA acceleration applies only to batched Dynamic-FPDE tensor
-operations.
-
-See `docs/dynamic_fpde_experiments.md` for dataset assumptions, output files,
-metric definitions, margin diagnostics, LaTeX table generation, and
-interpretation limits.
+Audio decode, target-sample-rate resampling, mono conversion, and acoustic
+feature extraction stay on CPU. Native-Time FPDE computation can run on CPU or,
+with `--backend cuda`, as CuPy elementwise attribution tensor computation.
+CUDA mode never pads or fixed-length-resamples variable-length clips; it groups
+only samples that naturally share the same `(T, F)`.
 
 ## Main Outputs
 
@@ -95,9 +99,26 @@ The ESC-50 runner writes:
 - `tables/table_dynamic_fpde_margin_summary.tex`
 - `tables/table_dynamic_fpde_additivity.tex`
 - `tables/table_dynamic_fpde_lambda.tex`
+- `tables/table_dynamic_fpde_native_time_checks.tex`
 
 Feature caches under `outputs/**/cache/features/` are ignored by default
 because they are derived from ESC-50 audio.
+
+## Interpretation Limits
+
+Dynamic-FPDE explains prototype evidence in frame-level acoustic feature space.
+It does not claim raw waveform attribution, causal explanation, black-box model
+faithfulness, DTW alignment, or verse/chorus alignment. Dynamic-FPDE itself is
+not sampling-rate invariant; raw audio is decoded, resampled to `target_sr`,
+converted to mono, converted to frame-level features, and then explained.
+
+Total evidence can depend on the number of frames, so do not directly compare
+total evidence across clips with different lengths without normalization or
+careful interpretation. Prototype frames are auditable through
+`source_sample_id`, `source_frame_index`, and `source_time_sec`.
+
+See `docs/dynamic_fpde_experiments.md` for dataset assumptions, output schemas,
+metric definitions, CUDA details, and table generation.
 
 ## Citation
 

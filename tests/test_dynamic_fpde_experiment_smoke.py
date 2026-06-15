@@ -26,7 +26,7 @@ def test_project_installs_fpde_from_dynamic_branch():
     )
     deps = pyproject["project"]["dependencies"]
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in deps
-    assert "librosa" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
+    assert "soundfile" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
     assert "matplotlib" in pyproject["project"]["optional-dependencies"]["plot"]
     assert "openml" not in pyproject["project"]["optional-dependencies"]
     assert "baselines" not in pyproject["project"]["optional-dependencies"]
@@ -52,6 +52,13 @@ def test_cli_accepts_explicit_cuda_backend():
     assert args.backend == "cuda"
 
 
+def test_cli_rejects_legacy_prototype_length():
+    from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--dataset-root", "ESC-50", "--prototype-length", "64"])
+
+
 def test_cuda_backend_error_is_not_silently_downgraded(monkeypatch: pytest.MonkeyPatch):
     from experiments.dynamic_fpde_audio import run_esc50_dynamic_fpde as runner
 
@@ -64,14 +71,15 @@ def test_cuda_backend_error_is_not_silently_downgraded(monkeypatch: pytest.Monke
         runner._ensure_backend("cuda")
 
 
-def test_cuda_backend_uses_local_cupy_path_without_fpde_dynamic_cuda(monkeypatch: pytest.MonkeyPatch):
-    from fpde import prepare_dynamic_fpde_context
-
+def test_cuda_backend_uses_native_time_without_padding_or_resampling(monkeypatch: pytest.MonkeyPatch):
     from experiments.dynamic_fpde_audio.datasets import ESCSample
+    from experiments.dynamic_fpde_audio.native_prototypes import NativePrototype
     from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import (
-        _explain_batch_cpu,
+        _class_means,
         _explain_batch_cuda,
-        _resolve_dynamic_input,
+        _explain_one_cpu,
+        _require_native_fpde,
+        _resolve_native_input,
     )
 
     class _FakeRuntime:
@@ -85,29 +93,40 @@ def test_cuda_backend_uses_local_cupy_path_without_fpde_dynamic_cuda(monkeypatch
         asnumpy=np.asarray,
         cuda=types.SimpleNamespace(runtime=_FakeRuntime()),
         float64=np.float64,
+        linalg=types.SimpleNamespace(norm=np.linalg.norm),
+        ones=np.ones,
         sqrt=np.sqrt,
         sum=np.sum,
     )
     monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
 
-    X_train = [
-        np.array([[0.0, 0.2], [0.5, 0.4], [1.0, 0.7]], dtype=float),
-        np.array([[0.1, 0.1], [0.4, 0.5], [0.9, 0.8]], dtype=float),
-        np.array([[1.0, 0.3], [0.4, 0.2], [0.0, 0.1]], dtype=float),
-        np.array([[0.9, 0.4], [0.3, 0.3], [0.1, 0.0]], dtype=float),
-    ]
-    context = prepare_dynamic_fpde_context(X_train, ["class_a", "class_a", "class_b", "class_b"], prototype_length=3)
+    api = _require_native_fpde()
     samples = [
         ESCSample("sample_a", Path("sample_a.wav"), "sample_a.wav", 1, "class_a"),
         ESCSample("sample_b", Path("sample_b.wav"), "sample_b.wav", 1, "class_a"),
     ]
+    train_samples = [
+        ESCSample("train_a", Path("train_a.wav"), "train_a.wav", 2, "class_a"),
+        ESCSample("train_b", Path("train_b.wav"), "train_b.wav", 2, "class_b"),
+    ]
+    train_features = {
+        "train_a": np.array([[0.0, 0.2], [0.5, 0.4], [1.0, 0.7]], dtype=float),
+        "train_b": np.array([[1.0, 0.3], [0.4, 0.2], [0.0, 0.1]], dtype=float),
+    }
+    class_means, global_mean = _class_means(train_features, train_samples)
+    prototypes = {
+        "class_a": NativePrototype(np.array([0.5, 0.4]), {"label": "class_a", "source_sample_id": "train_a", "source_frame_index": 1}),
+        "class_b": NativePrototype(np.array([0.4, 0.2]), {"label": "class_b", "source_sample_id": "train_b", "source_frame_index": 1}),
+    }
     resolved = [
-        _resolve_dynamic_input(
+        _resolve_native_input(
+            sample,
             X,
-            context,
-            sample=sample,
-            target_label="class_a",
+            prototypes,
             rival_label="class_b",
+            anchor_mode="zero",
+            class_means=class_means,
+            global_mean=global_mean,
         )
         for sample, X in zip(
             samples,
@@ -120,8 +139,22 @@ def test_cuda_backend_uses_local_cupy_path_without_fpde_dynamic_cuda(monkeypatch
     ]
 
     for mode in ("dynamic_diff", "dynamic_cos", "dynamic_hyb"):
-        cpu = _explain_batch_cpu(resolved, mode=mode, lambda_hyb=0.35)
-        cuda = _explain_batch_cuda(resolved, mode=mode, lambda_hyb=0.35)
+        cpu = {
+            item.sample.sample_id: (
+                _explain_one_cpu(
+                    api,
+                    item,
+                    mode=mode,
+                    lambda_hyb=0.35,
+                    normalize="none",
+                    feature_names=["a", "b"],
+                    feature_config=types.SimpleNamespace(frame_time_sec=lambda i: float(i)),
+                ),
+                0.0,
+            )
+            for item in resolved
+        }
+        cuda = _explain_batch_cuda(api, resolved, mode=mode, lambda_hyb=0.35, normalize="none")
 
         for sample in samples:
             cpu_explanation = cpu[sample.sample_id][0]
@@ -161,7 +194,6 @@ def _write_wav(path: Path, *, frequency: float, sr: int = 22050) -> None:
 
 def _make_tiny_esc50(root: Path) -> None:
     pytest.importorskip("fpde")
-    pytest.importorskip("librosa")
     pytest.importorskip("matplotlib")
     rows = []
     categories = ["class_a", "class_b"]
@@ -197,14 +229,20 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
             "1",
             "--seed",
             "7",
-            "--prototype-length",
-            "8",
-            "--lambda-grid",
-            "0.0,0.5,1.0",
-            "--n-fft",
-            "256",
-            "--hop-length",
+            "--prototype-mode",
+            "exemplar",
+            "--prototype-selection",
+            "nearest_to_class_centroid_frame",
+            "--anchor",
+            "zero",
+            "--normalize",
+            "none",
+            "--lambda-hyb",
+            "0.5",
+            "--frame-length",
             "128",
+            "--hop-length",
+            "64",
             "--steps",
             "2",
             "--make-figures",
@@ -218,6 +256,7 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
     lambdas = output_dir / "results" / "dynamic_fpde_lambda_selection.csv"
     additivity = output_dir / "results" / "dynamic_fpde_additivity_summary.csv"
     assert sample_metrics.exists()
+    assert (output_dir / "native_time_feature_config.json").exists()
     assert summary.exists()
     assert positive_summary.exists()
     assert lambdas.exists()
@@ -225,6 +264,7 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
     assert (output_dir / "tables" / "table_dynamic_fpde_main_results.tex").exists()
     assert (output_dir / "tables" / "table_dynamic_fpde_positive_margin_results.tex").exists()
     assert (output_dir / "tables" / "table_dynamic_fpde_margin_summary.tex").exists()
+    assert (output_dir / "tables" / "table_dynamic_fpde_native_time_checks.tex").exists()
     figures = output_dir / "figures"
     assert list(figures.glob("example_time_importance_*.png"))
     assert list(figures.glob("example_attribution_heatmap_*.png"))
@@ -247,10 +287,17 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "evaluation_margin",
         "evidence_role",
         "aggregation_unit",
+        "phi_shape",
+        "x_shape",
+        "shape_preserved",
+        "target_prototype_source_sample_id",
+        "rival_prototype_source_sample_id",
+        "prototype_mode",
+        "prototype_selection_rule",
     }.issubset(rows[0])
     assert {row["prototype_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
     assert {row["selection_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
-    assert {row["selection_margin_source"] for row in rows} == {"dynamic_diff"}
+    assert {row["selection_margin_source"] for row in rows} == {"native_dynamic_diff"}
     assert {row["aggregation_unit"] for row in rows} == {"sample", "sample_repetition"}
     assert all(row["prototype_margin"] == row["evidence"] for row in rows)
     baseline_rows = [row for row in rows if row["method"].endswith("_baseline")]
@@ -266,6 +313,8 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
         "random_baseline",
     }
     assert all(row["T"] and row["F"] for row in rows)
+    assert {row["shape_preserved"] for row in rows} == {"True"}
+    assert {row["prototype_mode"] for row in rows} == {"selected_exemplar"}
     for sample_id in {row["sample_id"] for row in rows}:
         sample_group = [row for row in rows if row["sample_id"] == sample_id]
         assert len({row["target_label"] for row in sample_group}) == 1
@@ -299,39 +348,69 @@ def _cupy_or_skip():
 
 def test_dynamic_fpde_cuda_backend_matches_cpu_on_synthetic_batch(tmp_path: Path):
     _cupy_or_skip()
-    from fpde import prepare_dynamic_fpde_context
 
     from experiments.dynamic_fpde_audio.datasets import ESCSample
+    from experiments.dynamic_fpde_audio.native_prototypes import NativePrototype
     from experiments.dynamic_fpde_audio.run_esc50_dynamic_fpde import (
-        _explain_batch_cpu,
+        _class_means,
         _explain_batch_cuda,
-        _resolve_dynamic_input,
+        _explain_one_cpu,
+        _require_native_fpde,
+        _resolve_native_input,
     )
 
-    X_train = [
-        np.array([[0.0, 0.2], [0.5, 0.4], [1.0, 0.7]], dtype=float),
-        np.array([[0.1, 0.1], [0.4, 0.5], [0.9, 0.8]], dtype=float),
-        np.array([[1.0, 0.3], [0.4, 0.2], [0.0, 0.1]], dtype=float),
-        np.array([[0.9, 0.4], [0.3, 0.3], [0.1, 0.0]], dtype=float),
-    ]
-    y_train = ["class_a", "class_a", "class_b", "class_b"]
-    context = prepare_dynamic_fpde_context(X_train, y_train, prototype_length=3)
+    api = _require_native_fpde()
     samples = [
         ESCSample("sample_a", tmp_path / "sample_a.wav", "sample_a.wav", 1, "class_a"),
         ESCSample("sample_b", tmp_path / "sample_b.wav", "sample_b.wav", 1, "class_a"),
     ]
+    train_samples = [
+        ESCSample("train_a", tmp_path / "train_a.wav", "train_a.wav", 2, "class_a"),
+        ESCSample("train_b", tmp_path / "train_b.wav", "train_b.wav", 2, "class_b"),
+    ]
+    train_features = {
+        "train_a": np.array([[0.0, 0.2], [0.5, 0.4], [1.0, 0.7]], dtype=float),
+        "train_b": np.array([[1.0, 0.3], [0.4, 0.2], [0.0, 0.1]], dtype=float),
+    }
+    class_means, global_mean = _class_means(train_features, train_samples)
+    prototypes = {
+        "class_a": NativePrototype(np.array([0.5, 0.4]), {"label": "class_a", "source_sample_id": "train_a", "source_frame_index": 1}),
+        "class_b": NativePrototype(np.array([0.4, 0.2]), {"label": "class_b", "source_sample_id": "train_b", "source_frame_index": 1}),
+    }
     X_test = [
         np.array([[0.2, 0.2], [0.6, 0.4], [0.8, 0.6]], dtype=float),
         np.array([[0.0, 0.3], [0.5, 0.3], [1.1, 0.7]], dtype=float),
     ]
     resolved = [
-        _resolve_dynamic_input(X, context, sample=sample, target_label="class_a", rival_label="class_b")
+        _resolve_native_input(
+            sample,
+            X,
+            prototypes,
+            rival_label="class_b",
+            anchor_mode="zero",
+            class_means=class_means,
+            global_mean=global_mean,
+        )
         for sample, X in zip(samples, X_test, strict=True)
     ]
 
     for mode in ("dynamic_diff", "dynamic_cos", "dynamic_hyb"):
-        cpu = _explain_batch_cpu(resolved, mode=mode, lambda_hyb=0.35)
-        cuda = _explain_batch_cuda(resolved, mode=mode, lambda_hyb=0.35)
+        cpu = {
+            item.sample.sample_id: (
+                _explain_one_cpu(
+                    api,
+                    item,
+                    mode=mode,
+                    lambda_hyb=0.35,
+                    normalize="none",
+                    feature_names=["a", "b"],
+                    feature_config=type("FeatureConfigStub", (), {"frame_time_sec": lambda self, i: float(i)})(),
+                ),
+                0.0,
+            )
+            for item in resolved
+        }
+        cuda = _explain_batch_cuda(api, resolved, mode=mode, lambda_hyb=0.35, normalize="none")
 
         for sample in samples:
             cpu_explanation = cpu[sample.sample_id][0]

@@ -16,6 +16,9 @@ dependencies:
   - seaborn
   - pip:
       - fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic
+      - torch
+      - torchaudio
+      - tqdm
       - lightgbm
       - openml
       - shap
@@ -23,7 +26,6 @@ dependencies:
       - aime-xai
       - pytest
       - pyarrow
-      - librosa
       - soundfile
       # Optional NVIDIA CUDA backend for Dynamic-FPDE tensor batches.
       - cupy-cuda13x

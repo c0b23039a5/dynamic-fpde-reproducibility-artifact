@@ -274,6 +274,20 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
             }
         ],
     )
+    write_csv(
+        results / "dynamic_fpde_sample_metrics.csv",
+        [
+            {
+                "dataset": "esc50",
+                "fold": 1,
+                "method": "dynamic_hyb",
+                "shape_preserved": True,
+                "target_prototype_source_sample_id": "train_a",
+                "rival_prototype_source_sample_id": "train_b",
+                "abs_exactness_residual": 1e-12,
+            }
+        ],
+    )
 
     written = generate_tables(results, tables)
 
@@ -283,10 +297,11 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
         "table_dynamic_fpde_margin_summary.tex",
         "table_dynamic_fpde_additivity.tex",
         "table_dynamic_fpde_lambda.tex",
+        "table_dynamic_fpde_native_time_checks.tex",
     }
     main_text = (tables / "table_dynamic_fpde_main_results.tex").read_text(encoding="utf-8")
     assert "\\toprule" in main_text
-    assert "dynamic\\_hyb" in main_text
+    assert "Native-Time Dynamic-Hyb" in main_text
     assert "0.7500" in main_text
     assert "Unique N" in main_text
     assert "Rows" in main_text

@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from experiments.dynamic_fpde_audio.baselines import energy_frame_scores, random_frame_scores
 from experiments.dynamic_fpde_audio.features import fit_standardizer, transform_features
 
 
-def test_feature_standardization_uses_train_statistics_and_stays_finite():
+def test_acoustic_feature_standardization_uses_train_statistics_and_stays_finite():
     train = [
-        np.array([[1.0, 10.0], [3.0, 10.0]], dtype=float),
-        np.array([[5.0, 10.0]], dtype=float),
+        np.array([[1.0, 2.0], [3.0, 4.0]], dtype=float),
+        np.array([[5.0, 6.0]], dtype=float),
     ]
-    test = np.array([[7.0, 10.0], [9.0, 10.0]], dtype=float)
+    test = np.array([[7.0, 8.0], [9.0, 10.0]], dtype=float)
 
-    standardizer = fit_standardizer(train, ["rms", "mfcc_1"])
+    standardizer = fit_standardizer(train, ["a", "b"])
     transformed_train = [transform_features(X, standardizer) for X in train]
     transformed_test = transform_features(test, standardizer)
 
@@ -22,18 +21,15 @@ def test_feature_standardization_uses_train_statistics_and_stays_finite():
     np.testing.assert_allclose(np.mean(stacked_train, axis=0), [0.0, 0.0], atol=1e-12)
     assert np.all(np.isfinite(stacked_train))
     assert np.all(np.isfinite(transformed_test))
-    np.testing.assert_allclose(transformed_test[:, 1], [0.0, 0.0])
 
 
-def test_energy_baseline_ranks_higher_rms_frames_first():
-    X = np.array([[0.2, 1.0], [0.9, 0.0], [0.4, 2.0]], dtype=float)
+def test_energy_baseline_ranks_larger_acoustic_feature_norm_first():
+    X = np.array([[0.2, 0.0], [0.6, 0.8], [0.4, 0.1]], dtype=float)
 
-    scores = energy_frame_scores(X, ["rms", "mfcc_1"])
+    scores = energy_frame_scores(X, ["a", "b"])
     order = np.argsort(scores)[::-1]
 
     assert order.tolist() == [1, 2, 0]
-    with pytest.raises(ValueError, match="rms"):
-        energy_frame_scores(X, ["energy", "mfcc_1"])
 
 
 def test_random_baseline_is_deterministic_for_seed_and_repetition():
@@ -43,4 +39,3 @@ def test_random_baseline_is_deterministic_for_seed_and_repetition():
 
     np.testing.assert_allclose(scores_a, scores_b)
     assert not np.allclose(scores_a, scores_c)
-

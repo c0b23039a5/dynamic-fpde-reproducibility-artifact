@@ -21,7 +21,9 @@ scipy
 matplotlib
 pytest
 pyarrow
-librosa
+torch
+torchaudio
+tqdm
 soundfile
 
 # Optional NVIDIA CUDA backend for Dynamic-FPDE tensor batches.

@@ -6,6 +6,15 @@ import csv
 from pathlib import Path
 
 
+METHOD_LABELS = {
+    "dynamic_diff": "Native-Time Dynamic-Diff",
+    "dynamic_cos": "Native-Time Dynamic-Cos",
+    "dynamic_hyb": "Native-Time Dynamic-Hyb",
+    "energy_baseline": "Energy baseline",
+    "random_baseline": "Random baseline",
+}
+
+
 def _read_required_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"required CSV does not exist: {path}")
@@ -20,6 +29,10 @@ def _fmt(value: object) -> str:
         return f"{float(value):.4f}"
     except (TypeError, ValueError):
         return str(value).replace("_", r"\_")
+
+
+def _method_label(value: object) -> str:
+    return METHOD_LABELS.get(str(value), str(value))
 
 
 def _write_table(path: Path, columns: list[str], rows: list[list[object]], caption: str, label: str) -> None:
@@ -48,6 +61,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
     positive_summary = _read_required_csv(results / "dynamic_fpde_summary_positive_margin_by_method.csv")
     additivity = _read_required_csv(results / "dynamic_fpde_additivity_summary.csv")
     lambdas = _read_required_csv(results / "dynamic_fpde_lambda_selection.csv")
+    sample_metrics = _read_required_csv(results / "dynamic_fpde_sample_metrics.csv")
     written: list[Path] = []
 
     main_path = tables / "table_dynamic_fpde_main_results.tex"
@@ -58,7 +72,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             [
                 row.get("dataset"),
                 row.get("fold"),
-                row.get("method"),
+                _method_label(row.get("method")),
                 row.get("combined_score_mean"),
                 row.get("deletion_drop_auc_mean"),
                 row.get("insertion_gain_auc_mean"),
@@ -67,7 +81,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in summary
         ],
-        "Dynamic-FPDE all-sample prototype-driven deletion and insertion results; random baseline repetitions are averaged per sample.",
+        "Native-Time Dynamic-FPDE all-sample prototype-evidence removal and recovery diagnostics; random baseline repetitions are averaged per sample.",
         "tab:dynamic-fpde-main-results",
     )
     written.append(main_path)
@@ -80,7 +94,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             [
                 row.get("dataset"),
                 row.get("fold"),
-                row.get("method"),
+                _method_label(row.get("method")),
                 row.get("combined_score_mean"),
                 row.get("deletion_drop_auc_mean"),
                 row.get("insertion_gain_auc_mean"),
@@ -89,7 +103,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in positive_summary
         ],
-        "Dynamic-FPDE selection-positive-margin results using the common Dynamic-Diff target/rival pair; random repetitions are averaged per sample.",
+        "Native-Time Dynamic-FPDE selection-positive-margin results using the common Native-Time Dynamic-Diff target/rival pair; random repetitions are averaged per sample.",
         "tab:dynamic-fpde-positive-margin-results",
     )
     written.append(positive_path)
@@ -112,7 +126,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             [
                 row.get("dataset"),
                 row.get("fold"),
-                row.get("method"),
+                _method_label(row.get("method")),
                 row.get("prototype_margin_mean"),
                 row.get("prototype_margin_positive_rate"),
                 row.get("selection_margin_mean"),
@@ -122,7 +136,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in summary
         ],
-        "Method-specific prototype margins and common Dynamic-Diff selection margins by method.",
+        "Method-specific prototype margins and common Native-Time Dynamic-Diff selection margins by method.",
         "tab:dynamic-fpde-margin-summary",
     )
     written.append(margin_path)
@@ -135,13 +149,13 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             [
                 row.get("dataset"),
                 row.get("fold"),
-                row.get("method"),
+                _method_label(row.get("method")),
                 row.get("abs_exactness_residual_mean"),
                 row.get("n"),
             ]
             for row in additivity
         ],
-        "Dynamic-FPDE auditable attribution-sum residuals.",
+        "Native-Time Dynamic-FPDE auditable attribution-sum residuals for Phi.",
         "tab:dynamic-fpde-additivity",
     )
     written.append(additivity_path)
@@ -162,8 +176,42 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in lambdas
         ],
-        "Dynamic-Hyb lambda selection with normalized prototype-evidence curves.",
+        "Native-Time Dynamic-Hyb lambda selection with normalized prototype-evidence diagnostics.",
         "tab:dynamic-fpde-lambda",
     )
     written.append(lambda_path)
+
+    shape_path = tables / "table_dynamic_fpde_native_time_checks.tex"
+    methods = sorted({row.get("method", "") for row in sample_metrics})
+    check_rows: list[list[object]] = []
+    for method in methods:
+        rows = [row for row in sample_metrics if row.get("method") == method]
+        n = len(rows)
+        shape_ok = sum(str(row.get("shape_preserved", "")).lower() == "true" for row in rows)
+        target_meta = sum(bool(row.get("target_prototype_source_sample_id")) for row in rows)
+        rival_meta = sum(bool(row.get("rival_prototype_source_sample_id")) for row in rows)
+        residuals = []
+        for row in rows:
+            try:
+                residuals.append(float(row.get("abs_exactness_residual") or "nan"))
+            except ValueError:
+                pass
+        check_rows.append(
+            [
+                _method_label(method),
+                n,
+                shape_ok,
+                target_meta,
+                rival_meta,
+                max(residuals) if residuals else "",
+            ]
+        )
+    _write_table(
+        shape_path,
+        ["Method", "N", "Shape OK", "Target Proto Meta", "Rival Proto Meta", "Max Abs. Residual"],
+        check_rows,
+        "Native-Time checks for Phi shape preservation, exemplar prototype metadata availability, and attribution additivity.",
+        "tab:dynamic-fpde-native-time-checks",
+    )
+    written.append(shape_path)
     return written

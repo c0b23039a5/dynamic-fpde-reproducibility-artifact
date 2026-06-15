@@ -25,16 +25,15 @@ class ModeConfig:
     max_classes: int | None
     max_train_per_class: int | None
     max_test_per_class: int | None
-    prototype_length: int
 
 
 def get_mode_config(mode: str) -> ModeConfig:
     if mode == "smoke":
-        return ModeConfig(mode, max_classes=5, max_train_per_class=5, max_test_per_class=2, prototype_length=64)
+        return ModeConfig(mode, max_classes=5, max_train_per_class=5, max_test_per_class=2)
     if mode == "pilot":
-        return ModeConfig(mode, max_classes=10, max_train_per_class=20, max_test_per_class=10, prototype_length=128)
+        return ModeConfig(mode, max_classes=10, max_train_per_class=20, max_test_per_class=10)
     if mode == "full":
-        return ModeConfig(mode, max_classes=None, max_train_per_class=None, max_test_per_class=None, prototype_length=128)
+        return ModeConfig(mode, max_classes=None, max_train_per_class=None, max_test_per_class=None)
     raise ValueError("mode must be one of: smoke, pilot, full")
 
 
@@ -153,4 +152,3 @@ def parse_folds(fold: int | None, folds: str | None) -> list[int]:
 
 def labels_for(samples: Iterable[ESCSample]) -> list[str]:
     return [sample.category for sample in samples]
-

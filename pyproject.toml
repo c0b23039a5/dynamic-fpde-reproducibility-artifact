@@ -13,6 +13,9 @@ dependencies = [
   "pandas",
   "scikit-learn",
   "scipy",
+  "torch",
+  "torchaudio",
+  "tqdm",
   "pyyaml",
 ]
 
@@ -22,7 +25,12 @@ dev = [
   "pyarrow",
 ]
 dynamic-audio = [
-  "librosa",
+  "soundfile",
+]
+raw-audio-generative = [
+  "torch",
+  "torchaudio",
+  "tqdm",
   "soundfile",
 ]
 plot = [

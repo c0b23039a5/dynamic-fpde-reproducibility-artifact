@@ -1,4 +1,4 @@
-"""Run ESC-50 Dynamic-FPDE experiments with fpde-xai/fpde@dynamic."""
+"""Run ESC-50 Native-Time Dynamic-FPDE experiments."""
 
 from __future__ import annotations
 
@@ -10,21 +10,10 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-
-from fpde import (
-    DynamicFPDEExplanation,
-    dynamic_cos_fpde,
-    dynamic_diff_fpde,
-    dynamic_fpde_explain_one,
-    dynamic_hyb_fpde,
-    prepare_dynamic_fpde_context,
-    resample_time_series_linear,
-    select_dynamic_lambda,
-    temporal_deletion_insertion_curves,
-)
 
 from experiments.dynamic_fpde_audio.aggregate import (
     aggregate_additivity,
@@ -43,7 +32,19 @@ from experiments.dynamic_fpde_audio.datasets import (
     split_esc50,
 )
 from experiments.dynamic_fpde_audio.features import FeatureConfig, fit_standardizer, load_or_extract_features, transform_features
+from experiments.dynamic_fpde_audio.native_metrics import native_temporal_deletion_insertion_curves
+from experiments.dynamic_fpde_audio.native_prototypes import NativePrototype, select_class_exemplar_prototypes, validate_feature_matrix
 from experiments.dynamic_fpde_audio.tables import generate_tables
+
+
+REQUIRED_NATIVE_FPDE_API = (
+    "NativeTimeDynamicFPDEExplanation",
+    "native_dynamic_diff_fpde",
+    "native_dynamic_cos_fpde",
+    "native_dynamic_hyb_fpde",
+    "native_dynamic_fpde_explain_one",
+    "native_dynamic_fpde_explain_batch",
+)
 
 
 SAMPLE_FIELDS = [
@@ -57,6 +58,8 @@ SAMPLE_FIELDS = [
     "common_rival_label",
     "method",
     "lambda_hyb",
+    "normalize",
+    "anchor",
     "evidence",
     "evidence_role",
     "evaluation_evidence",
@@ -76,26 +79,35 @@ SAMPLE_FIELDS = [
     "runtime_sec",
     "T",
     "F",
+    "phi_shape",
+    "x_shape",
+    "shape_preserved",
+    "target_prototype_source_sample_id",
+    "target_prototype_source_frame_index",
+    "target_prototype_source_time_sec",
+    "target_prototype_label",
+    "rival_prototype_source_sample_id",
+    "rival_prototype_source_frame_index",
+    "rival_prototype_source_time_sec",
+    "rival_prototype_label",
+    "prototype_mode",
+    "prototype_selection_rule",
     "random_repetition",
     "aggregation_unit",
 ]
 
 
 @dataclass(frozen=True)
-class _ResolvedDynamicInput:
+class _ResolvedNativeInput:
     sample: ESCSample
     X: np.ndarray
-    target_proto: np.ndarray
-    rival_proto: np.ndarray
+    p_target: np.ndarray
+    p_rival: np.ndarray
     anchor: np.ndarray
-    target_idx: int
-    rival_idx: int
-    target_label: Any
-    rival_label: Any
-    diff_positive_score: float
-    diff_negative_score: float
-    cos_positive_score: float
-    cos_negative_score: float
+    target_label: str
+    rival_label: str
+    target_metadata: dict[str, object]
+    rival_metadata: dict[str, object]
 
 
 def _json_default(value: Any) -> Any:
@@ -120,6 +132,24 @@ def _package_version(package: str) -> str | None:
         return importlib.metadata.version(package)
     except Exception:
         return None
+
+
+def _require_native_fpde() -> SimpleNamespace:
+    try:
+        import fpde
+    except ImportError as exc:
+        raise RuntimeError(
+            "Native-Time Dynamic-FPDE requires fpde from git+https://github.com/fpde-xai/fpde.git@dynamic. "
+            "Install the artifact dependencies before running the ESC-50 runner."
+        ) from exc
+    missing = [name for name in REQUIRED_NATIVE_FPDE_API if not hasattr(fpde, name)]
+    if missing:
+        raise RuntimeError(
+            "Installed fpde package does not expose the Native-Time Dynamic-FPDE API "
+            f"required by this artifact: {', '.join(missing)}. Reinstall with "
+            '`python -m pip install --force-reinstall "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic"`.'
+        )
+    return SimpleNamespace(**{name: getattr(fpde, name) for name in REQUIRED_NATIVE_FPDE_API})
 
 
 def _load_feature_map(
@@ -147,111 +177,15 @@ def _load_feature_map(
                 raise
             errors.append({"sample_id": sample.sample_id, "audio_path": str(sample.audio_path), "error": str(exc)})
             continue
+        validate_feature_matrix(X)
         if feature_names is None:
             feature_names = names
         elif names != feature_names:
             raise ValueError(f"feature names changed for sample {sample.sample_id}")
         features[sample.sample_id] = X
     if feature_names is None:
-        raise RuntimeError("no features were extracted")
+        raise RuntimeError("no acoustic feature matrices were loaded")
     return features, feature_names, errors
-
-
-def _baseline_explanation(base: DynamicFPDEExplanation, scores: np.ndarray, *, method: str) -> DynamicFPDEExplanation:
-    return DynamicFPDEExplanation(
-        mode=method,
-        evidence=base.evidence,
-        attributions=np.zeros_like(base.attributions),
-        time_importance=np.asarray(scores, dtype=float),
-        feature_importance=np.zeros(base.attributions.shape[1], dtype=float),
-        positive_score=base.positive_score,
-        negative_score=base.negative_score,
-        target_label=base.target_label,
-        rival_label=base.rival_label,
-        exactness_residual=np.nan,
-        details={"baseline": method, "ranking_only": True},
-    )
-
-
-def _row_from_result(
-    *,
-    fold: int,
-    seed: int,
-    sample: ESCSample,
-    method: str,
-    lambda_hyb: float | str,
-    explanation: DynamicFPDEExplanation,
-    selection_explanation: DynamicFPDEExplanation,
-    curves: dict[str, Any],
-    runtime_sec: float,
-    random_repetition: int | str = "",
-) -> dict[str, object]:
-    residual = "" if not np.isfinite(explanation.exactness_residual) else float(explanation.exactness_residual)
-    prototype_margin = float(explanation.evidence)
-    selection_margin = float(selection_explanation.evidence)
-    margin_sign = _margin_sign(prototype_margin)
-    selection_margin_sign = _margin_sign(selection_margin)
-    evidence_role = "evaluation_margin" if method.endswith("_baseline") else "explanation_margin"
-    return {
-        "dataset": "esc50",
-        "fold": int(fold),
-        "seed": int(seed),
-        "sample_id": sample.sample_id,
-        "true_label": sample.category,
-        "target_label": explanation.target_label,
-        "rival_label": explanation.rival_label,
-        "common_rival_label": selection_explanation.rival_label,
-        "method": method,
-        "lambda_hyb": lambda_hyb,
-        "evidence": float(explanation.evidence),
-        "evidence_role": evidence_role,
-        "evaluation_evidence": float(explanation.evidence),
-        "evaluation_margin": float(explanation.evidence),
-        "prototype_margin": prototype_margin,
-        "prototype_margin_positive": bool(prototype_margin > 0.0),
-        "prototype_margin_sign": margin_sign,
-        "selection_margin": selection_margin,
-        "selection_margin_positive": bool(selection_margin > 0.0),
-        "selection_margin_sign": selection_margin_sign,
-        "selection_margin_source": "dynamic_diff",
-        "exactness_residual": residual,
-        "abs_exactness_residual": "" if residual == "" else abs(float(residual)),
-        "deletion_drop_auc": float(curves["deletion_drop_auc"]),
-        "insertion_gain_auc": float(curves["insertion_gain_auc"]),
-        "combined_score": float(curves["combined_score"]),
-        "runtime_sec": float(runtime_sec),
-        "T": int(explanation.attributions.shape[0]),
-        "F": int(explanation.attributions.shape[1]),
-        "random_repetition": random_repetition,
-        "aggregation_unit": "sample_repetition" if random_repetition != "" else "sample",
-    }
-
-
-def _margin_sign(value: float) -> str:
-    if value > 0.0:
-        return "positive"
-    if value < 0.0:
-        return "negative"
-    return "zero"
-
-
-def _regularized_matrix_norm(values: np.ndarray, eps: float) -> float:
-    return float(np.sqrt(np.sum(values * values) + eps))
-
-
-def _regularized_matrix_cosine(a: np.ndarray, b: np.ndarray, eps: float) -> float:
-    return float(np.sum(a * b) / (_regularized_matrix_norm(a, eps) * _regularized_matrix_norm(b, eps)))
-
-
-def _scale_value(value: float, scale: float) -> float:
-    return float(value / scale) if scale > 0.0 else 0.0
-
-
-def _prototype_index(labels: np.ndarray, label: Any, name: str) -> int:
-    matches = np.where(labels == label)[0]
-    if matches.size == 0:
-        raise ValueError(f"no prototype found for {name}={label!r}")
-    return int(matches[0])
 
 
 def _ensure_cuda_backend() -> None:
@@ -275,434 +209,12 @@ def _ensure_backend(backend: str) -> None:
         _ensure_cuda_backend()
 
 
-def _dynamic_diff_fpde_cuda(
-    X_batch: np.ndarray,
-    target_batch: np.ndarray,
-    rival_batch: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    import cupy as cp  # type: ignore[import-not-found]
-
-    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
-    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
-    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
-    attrs = (X_gpu - rival_gpu) ** 2 - (X_gpu - target_gpu) ** 2
-    evidences = cp.sum(attrs, axis=(1, 2))
-    return cp.asnumpy(attrs), cp.asnumpy(evidences)
-
-
-def _dynamic_cos_fpde_cuda(
-    X_batch: np.ndarray,
-    target_batch: np.ndarray,
-    rival_batch: np.ndarray,
-    *,
-    anchor_batch: np.ndarray,
-    eps: float = 1e-12,
-) -> tuple[np.ndarray, np.ndarray]:
-    import cupy as cp  # type: ignore[import-not-found]
-
-    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
-    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
-    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
-    anchor_gpu = cp.asarray(anchor_batch, dtype=cp.float64)
-
-    z = X_gpu - anchor_gpu
-    q_target = target_gpu - anchor_gpu
-    q_rival = rival_gpu - anchor_gpu
-    z_norm = cp.sqrt(cp.sum(z * z, axis=(1, 2), keepdims=True) + float(eps))
-    target_norm = cp.sqrt(cp.sum(q_target * q_target, axis=(1, 2), keepdims=True) + float(eps))
-    rival_norm = cp.sqrt(cp.sum(q_rival * q_rival, axis=(1, 2), keepdims=True) + float(eps))
-    attrs = (z * q_target) / (z_norm * target_norm) - (z * q_rival) / (z_norm * rival_norm)
-    evidences = cp.sum(attrs, axis=(1, 2))
-    return cp.asnumpy(attrs), cp.asnumpy(evidences)
-
-
-def _dynamic_hyb_fpde_cuda(
-    X_batch: np.ndarray,
-    target_batch: np.ndarray,
-    rival_batch: np.ndarray,
-    *,
-    lambda_hyb: float = 0.5,
-    anchor_batch: np.ndarray,
-    eps: float = 1e-12,
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    import cupy as cp  # type: ignore[import-not-found]
-
-    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
-    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
-    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
-    anchor_gpu = cp.asarray(anchor_batch, dtype=cp.float64)
-
-    diff_attrs = (X_gpu - rival_gpu) ** 2 - (X_gpu - target_gpu) ** 2
-    diff_evidences = cp.sum(diff_attrs, axis=(1, 2))
-
-    z = X_gpu - anchor_gpu
-    q_target = target_gpu - anchor_gpu
-    q_rival = rival_gpu - anchor_gpu
-    z_norm = cp.sqrt(cp.sum(z * z, axis=(1, 2), keepdims=True) + float(eps))
-    target_norm = cp.sqrt(cp.sum(q_target * q_target, axis=(1, 2), keepdims=True) + float(eps))
-    rival_norm = cp.sqrt(cp.sum(q_rival * q_rival, axis=(1, 2), keepdims=True) + float(eps))
-    cos_attrs = (z * q_target) / (z_norm * target_norm) - (z * q_rival) / (z_norm * rival_norm)
-    cos_evidences = cp.sum(cos_attrs, axis=(1, 2))
-
-    diff_scales = cp.sum(cp.abs(diff_attrs), axis=(1, 2), keepdims=True) + float(eps)
-    cos_scales = cp.sum(cp.abs(cos_attrs), axis=(1, 2), keepdims=True) + float(eps)
-    lambda_value = float(lambda_hyb)
-    attrs = lambda_value * (diff_attrs / diff_scales) + (1.0 - lambda_value) * (cos_attrs / cos_scales)
-    evidences = cp.sum(attrs, axis=(1, 2))
-    return (
-        cp.asnumpy(attrs),
-        cp.asnumpy(evidences),
-        {
-            "diff_evidence": cp.asnumpy(diff_evidences),
-            "cos_evidence": cp.asnumpy(cos_evidences),
-            "lambda_hyb": lambda_value,
-            "normalize": "l1",
-            "diff_scale": cp.asnumpy(diff_scales.reshape(-1)),
-            "cos_scale": cp.asnumpy(cos_scales.reshape(-1)),
-        },
-    )
-
-
-def _resolve_dynamic_input(
-    X: np.ndarray,
-    context: Any,
-    *,
-    sample: ESCSample,
-    target_label: Any,
-    rival_label: Any | None,
-    eps: float = 1e-12,
-) -> _ResolvedDynamicInput:
-    X_arr = np.asarray(X, dtype=float)
-    target_idx = _prototype_index(context.prototype_labels, target_label, "target_label")
-    target_proto = resample_time_series_linear(context.prototypes[target_idx], X_arr.shape[0])
-    if rival_label is None:
-        candidate_indices = np.where(context.prototype_labels != target_label)[0]
-        if candidate_indices.size == 0:
-            raise ValueError("rival_label is None, but no non-target prototypes exist")
-        distances = []
-        for idx in candidate_indices:
-            candidate = resample_time_series_linear(context.prototypes[int(idx)], X_arr.shape[0])
-            distances.append(float(np.sum((X_arr - candidate) ** 2)))
-        rival_idx = int(candidate_indices[int(np.argmin(np.asarray(distances, dtype=float)))])
-    else:
-        rival_idx = _prototype_index(context.prototype_labels, rival_label, "rival_label")
-        if context.prototype_labels[rival_idx] == target_label:
-            raise ValueError("rival_label must differ from target_label")
-    resolved_rival_label = context.prototype_labels[rival_idx]
-    rival_proto = resample_time_series_linear(context.prototypes[rival_idx], X_arr.shape[0])
-    anchor = resample_time_series_linear(context.mean_anchor, X_arr.shape[0])
-
-    z = X_arr - anchor
-    q_target = target_proto - anchor
-    q_rival = rival_proto - anchor
-    return _ResolvedDynamicInput(
-        sample=sample,
-        X=X_arr,
-        target_proto=target_proto,
-        rival_proto=rival_proto,
-        anchor=anchor,
-        target_idx=target_idx,
-        rival_idx=rival_idx,
-        target_label=target_label,
-        rival_label=resolved_rival_label,
-        diff_positive_score=-float(np.sum((X_arr - target_proto) ** 2)),
-        diff_negative_score=-float(np.sum((X_arr - rival_proto) ** 2)),
-        cos_positive_score=_regularized_matrix_cosine(z, q_target, eps),
-        cos_negative_score=_regularized_matrix_cosine(z, q_rival, eps),
-    )
-
-
-def _scalar_detail(details: dict[str, Any], key: str, index: int | None) -> Any:
-    value = details[key]
-    if index is None:
-        return value
-    arr = np.asarray(value)
-    if arr.ndim == 0:
-        return float(arr)
-    return arr[index]
-
-
-def _explanation_from_tensors(
-    resolved: _ResolvedDynamicInput,
-    *,
-    mode: str,
-    attributions: np.ndarray,
-    evidence: float,
-    diff_evidence: float | None = None,
-    cos_evidence: float | None = None,
-    hyb_details: dict[str, Any] | None = None,
-) -> DynamicFPDEExplanation:
-    attr = np.asarray(attributions, dtype=float)
-    details: dict[str, Any] = {
-        "target_prototype_index": int(resolved.target_idx),
-        "rival_prototype_index": int(resolved.rival_idx),
-        "anchor_strategy": "mean",
-        "eps": 1e-12,
-        "diff_positive_score": float(resolved.diff_positive_score),
-        "diff_negative_score": float(resolved.diff_negative_score),
-        "cos_positive_score": float(resolved.cos_positive_score),
-        "cos_negative_score": float(resolved.cos_negative_score),
-    }
-    if diff_evidence is not None:
-        details["diff_evidence"] = float(diff_evidence)
-    if cos_evidence is not None:
-        details["cos_evidence"] = float(cos_evidence)
-
-    if mode == "dynamic_diff":
-        positive_score = resolved.diff_positive_score
-        negative_score = resolved.diff_negative_score
-    elif mode == "dynamic_cos":
-        positive_score = resolved.cos_positive_score
-        negative_score = resolved.cos_negative_score
-    elif mode == "dynamic_hyb" and hyb_details is not None:
-        lambda_value = float(hyb_details["lambda_hyb"])
-        diff_scale = float(hyb_details["diff_scale"])
-        cos_scale = float(hyb_details["cos_scale"])
-        details.update(
-            {
-                "diff_evidence": float(hyb_details["diff_evidence"]),
-                "cos_evidence": float(hyb_details["cos_evidence"]),
-                "lambda_hyb": lambda_value,
-                "normalize": hyb_details["normalize"],
-                "diff_scale": diff_scale,
-                "cos_scale": cos_scale,
-                "hyb_score_definition": "weighted Diff/Cos scores divided by each component attribution L1 scale",
-            }
-        )
-        positive_score = lambda_value * _scale_value(resolved.diff_positive_score, diff_scale)
-        positive_score += (1.0 - lambda_value) * _scale_value(resolved.cos_positive_score, cos_scale)
-        negative_score = lambda_value * _scale_value(resolved.diff_negative_score, diff_scale)
-        negative_score += (1.0 - lambda_value) * _scale_value(resolved.cos_negative_score, cos_scale)
-        details["hyb_positive_score"] = float(positive_score)
-        details["hyb_negative_score"] = float(negative_score)
-    else:
-        raise ValueError(f"unsupported Dynamic-FPDE mode: {mode}")
-
-    time_importance = np.sum(attr, axis=1)
-    feature_importance = np.sum(attr, axis=0)
-    residual = float(evidence - np.sum(attr))
-    return DynamicFPDEExplanation(
-        mode=mode,
-        evidence=float(evidence),
-        attributions=attr.astype(float, copy=True),
-        time_importance=time_importance.astype(float, copy=True),
-        feature_importance=feature_importance.astype(float, copy=True),
-        positive_score=float(positive_score),
-        negative_score=float(negative_score),
-        target_label=resolved.target_label,
-        rival_label=resolved.rival_label,
-        exactness_residual=residual,
-        details=details,
-    )
-
-
-def _explain_and_score(
-    X: np.ndarray,
-    context: Any,
-    *,
-    sample: ESCSample,
-    mode: str,
-    rival_label: str | None,
-    lambda_hyb: float = 0.5,
-    steps: int,
-) -> tuple[DynamicFPDEExplanation, dict[str, Any], float]:
-    start = time.perf_counter()
-    explanation = dynamic_fpde_explain_one(
-        X,
-        context,
-        target_label=sample.category,
-        rival_label=rival_label,
-        mode=mode,
-        lambda_hyb=lambda_hyb,
-    )
-    curves = temporal_deletion_insertion_curves(
-        X,
-        explanation,
-        context,
-        target_label=sample.category,
-        rival_label=explanation.rival_label,
-        steps=steps,
-    )
-    return explanation, curves, time.perf_counter() - start
-
-
-def _explain_batch_cuda(
-    resolved_items: list[_ResolvedDynamicInput],
-    *,
-    mode: str,
-    lambda_hyb: float = 0.5,
-) -> dict[str, tuple[DynamicFPDEExplanation, float]]:
-    if not resolved_items:
-        return {}
-    _ensure_cuda_backend()
-
-    groups: dict[tuple[int, int], list[_ResolvedDynamicInput]] = {}
-    for item in resolved_items:
-        groups.setdefault(tuple(item.X.shape), []).append(item)
-
-    out: dict[str, tuple[DynamicFPDEExplanation, float]] = {}
-    for group_items in groups.values():
-        X_batch = np.stack([item.X for item in group_items], axis=0)
-        target_batch = np.stack([item.target_proto for item in group_items], axis=0)
-        rival_batch = np.stack([item.rival_proto for item in group_items], axis=0)
-        anchor_batch = np.stack([item.anchor for item in group_items], axis=0)
-
-        start = time.perf_counter()
-        if mode == "dynamic_diff":
-            attrs, evidences = _dynamic_diff_fpde_cuda(X_batch, target_batch, rival_batch)
-            details = None
-        elif mode == "dynamic_cos":
-            attrs, evidences = _dynamic_cos_fpde_cuda(X_batch, target_batch, rival_batch, anchor_batch=anchor_batch)
-            details = None
-        elif mode == "dynamic_hyb":
-            attrs, evidences, details = _dynamic_hyb_fpde_cuda(
-                X_batch,
-                target_batch,
-                rival_batch,
-                lambda_hyb=lambda_hyb,
-                anchor_batch=anchor_batch,
-            )
-        else:
-            raise ValueError(f"unsupported Dynamic-FPDE mode: {mode}")
-        per_sample_runtime = (time.perf_counter() - start) / len(group_items)
-
-        attrs_arr = np.asarray(attrs, dtype=float)
-        evidences_arr = np.asarray(evidences, dtype=float)
-        for idx, item in enumerate(group_items):
-            hyb_details = None
-            if details is not None:
-                hyb_details = {
-                    "diff_evidence": _scalar_detail(details, "diff_evidence", idx),
-                    "cos_evidence": _scalar_detail(details, "cos_evidence", idx),
-                    "lambda_hyb": details["lambda_hyb"],
-                    "normalize": details["normalize"],
-                    "diff_scale": _scalar_detail(details, "diff_scale", idx),
-                    "cos_scale": _scalar_detail(details, "cos_scale", idx),
-                }
-            explanation = _explanation_from_tensors(
-                item,
-                mode=mode,
-                attributions=attrs_arr[idx],
-                evidence=float(evidences_arr[idx]),
-                diff_evidence=float(evidences_arr[idx]) if mode == "dynamic_diff" else None,
-                cos_evidence=float(evidences_arr[idx]) if mode == "dynamic_cos" else None,
-                hyb_details=hyb_details,
-            )
-            out[item.sample.sample_id] = (explanation, per_sample_runtime)
-    return out
-
-
-def _explain_batch_cpu(
-    resolved_items: list[_ResolvedDynamicInput],
-    *,
-    mode: str,
-    lambda_hyb: float = 0.5,
-) -> dict[str, tuple[DynamicFPDEExplanation, float]]:
-    out: dict[str, tuple[DynamicFPDEExplanation, float]] = {}
-    for item in resolved_items:
-        start = time.perf_counter()
-        if mode == "dynamic_diff":
-            attr, evidence = dynamic_diff_fpde(item.X, item.target_proto, item.rival_proto)
-            explanation = _explanation_from_tensors(
-                item,
-                mode=mode,
-                attributions=attr,
-                evidence=evidence,
-                diff_evidence=evidence,
-            )
-        elif mode == "dynamic_cos":
-            attr, evidence = dynamic_cos_fpde(item.X, item.target_proto, item.rival_proto, anchor=item.anchor)
-            explanation = _explanation_from_tensors(
-                item,
-                mode=mode,
-                attributions=attr,
-                evidence=evidence,
-                cos_evidence=evidence,
-            )
-        elif mode == "dynamic_hyb":
-            attr, evidence, details = dynamic_hyb_fpde(
-                item.X,
-                item.target_proto,
-                item.rival_proto,
-                lambda_hyb=lambda_hyb,
-                anchor=item.anchor,
-            )
-            explanation = _explanation_from_tensors(
-                item,
-                mode=mode,
-                attributions=attr,
-                evidence=evidence,
-                hyb_details=details,
-            )
-        else:
-            raise ValueError(f"unsupported Dynamic-FPDE mode: {mode}")
-        out[item.sample.sample_id] = (explanation, time.perf_counter() - start)
-    return out
-
-
-def _prepare_cuda_explanations(
-    test_samples: list[ESCSample],
-    standardized: dict[str, np.ndarray],
-    context: Any,
-    *,
-    selected_lambda: float,
-) -> dict[tuple[str, str], tuple[DynamicFPDEExplanation, float]]:
-    selection_inputs = [
-        _resolve_dynamic_input(
-            standardized[sample.sample_id],
-            context,
-            sample=sample,
-            target_label=sample.category,
-            rival_label=None,
-        )
-        for sample in test_samples
-    ]
-    diff_explanations = _explain_batch_cuda(selection_inputs, mode="dynamic_diff")
-    common_inputs = [
-        _resolve_dynamic_input(
-            standardized[item.sample.sample_id],
-            context,
-            sample=item.sample,
-            target_label=item.sample.category,
-            rival_label=diff_explanations[item.sample.sample_id][0].rival_label,
-        )
-        for item in selection_inputs
-    ]
-    # The common-rival Diff explanation is numerically identical to the
-    # selection explanation; keep it keyed for the method row without a second
-    # GPU launch.
-    by_method: dict[tuple[str, str], tuple[DynamicFPDEExplanation, float]] = {
-        (sample_id, "selection"): value for sample_id, value in diff_explanations.items()
-    }
-    by_method.update({(sample_id, "dynamic_diff"): value for sample_id, value in diff_explanations.items()})
-    for mode in ("dynamic_cos", "dynamic_hyb"):
-        batch = _explain_batch_cuda(common_inputs, mode=mode, lambda_hyb=selected_lambda)
-        by_method.update({(sample_id, mode): value for sample_id, value in batch.items()})
-    return by_method
-
-
-def _score_baseline(
-    X: np.ndarray,
-    context: Any,
-    *,
-    sample: ESCSample,
-    scores: np.ndarray,
-    method: str,
-    rival_label: str | None,
-    steps: int,
-) -> tuple[DynamicFPDEExplanation, dict[str, Any], float]:
-    start = time.perf_counter()
-    base = dynamic_fpde_explain_one(X, context, target_label=sample.category, rival_label=rival_label, mode="dynamic_diff")
-    explanation = _baseline_explanation(base, scores, method=method)
-    curves = temporal_deletion_insertion_curves(
-        X,
-        explanation,
-        context,
-        target_label=sample.category,
-        rival_label=explanation.rival_label,
-        steps=steps,
-    )
-    return explanation, curves, time.perf_counter() - start
+def _margin_sign(value: float) -> str:
+    if value > 0.0:
+        return "positive"
+    if value < 0.0:
+        return "negative"
+    return "zero"
 
 
 def _stable_sample_seed(seed: int, sample_id: str) -> int:
@@ -714,7 +226,532 @@ def _safe_filename(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
 
 
-def _maybe_write_example_figures(output_dir: Path, sample: ESCSample, explanation: DynamicFPDEExplanation, curves: dict[str, Any]) -> None:
+def _class_means(
+    train_features: dict[str, np.ndarray],
+    train_samples: list[ESCSample],
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    by_label: dict[str, list[np.ndarray]] = {}
+    all_frames: list[np.ndarray] = []
+    for sample in train_samples:
+        X = validate_feature_matrix(train_features[sample.sample_id])
+        by_label.setdefault(sample.category, []).append(X)
+        all_frames.append(X)
+    class_means = {label: np.mean(np.vstack(items), axis=0) for label, items in by_label.items()}
+    return class_means, np.mean(np.vstack(all_frames), axis=0)
+
+
+def _anchor_vector(anchor_mode: str, *, target_label: str, class_means: dict[str, np.ndarray], global_mean: np.ndarray, F: int) -> np.ndarray:
+    if anchor_mode == "zero":
+        return np.zeros(F, dtype=float)
+    if anchor_mode == "class_mean":
+        return np.asarray(class_means[target_label], dtype=float).copy()
+    if anchor_mode == "global_mean":
+        return np.asarray(global_mean, dtype=float).copy()
+    raise ValueError("anchor must be zero, class_mean, or global_mean")
+
+
+def _resolve_native_input(
+    sample: ESCSample,
+    X: np.ndarray,
+    prototypes: dict[str, NativePrototype],
+    *,
+    rival_label: str | None,
+    anchor_mode: str,
+    class_means: dict[str, np.ndarray],
+    global_mean: np.ndarray,
+) -> _ResolvedNativeInput:
+    X_arr = validate_feature_matrix(X)
+    target_label = sample.category
+    if target_label not in prototypes:
+        raise ValueError(f"no target prototype for label={target_label!r}")
+    if rival_label is None:
+        distances = {
+            label: float(np.mean(np.sum((X_arr - proto.vector) ** 2, axis=1)))
+            for label, proto in prototypes.items()
+            if label != target_label
+        }
+        if not distances:
+            raise ValueError("at least one non-target prototype is required")
+        resolved_rival_label = min(distances, key=distances.get)
+    else:
+        resolved_rival_label = str(rival_label)
+        if resolved_rival_label == target_label:
+            raise ValueError("rival_label must differ from target_label")
+        if resolved_rival_label not in prototypes:
+            raise ValueError(f"no rival prototype for label={resolved_rival_label!r}")
+
+    p_target = np.asarray(prototypes[target_label].vector, dtype=float)
+    p_rival = np.asarray(prototypes[resolved_rival_label].vector, dtype=float)
+    F = X_arr.shape[1]
+    if p_target.shape != (F,):
+        raise ValueError(f"target prototype has shape {p_target.shape}, expected {(F,)}")
+    if p_rival.shape != (F,):
+        raise ValueError(f"rival prototype has shape {p_rival.shape}, expected {(F,)}")
+    anchor = _anchor_vector(anchor_mode, target_label=target_label, class_means=class_means, global_mean=global_mean, F=F)
+    if anchor.shape != (F,):
+        raise ValueError(f"anchor has shape {anchor.shape}, expected {(F,)}")
+    return _ResolvedNativeInput(
+        sample=sample,
+        X=X_arr,
+        p_target=p_target,
+        p_rival=p_rival,
+        anchor=anchor,
+        target_label=target_label,
+        rival_label=resolved_rival_label,
+        target_metadata=dict(prototypes[target_label].metadata),
+        rival_metadata=dict(prototypes[resolved_rival_label].metadata),
+    )
+
+
+def _explain_one_cpu(
+    api: SimpleNamespace,
+    item: _ResolvedNativeInput,
+    *,
+    mode: str,
+    lambda_hyb: float,
+    normalize: str,
+    feature_names: list[str],
+    feature_config: FeatureConfig,
+) -> Any:
+    timestamps = [feature_config.frame_time_sec(i) for i in range(item.X.shape[0])]
+    details = {
+        "target_prototype_metadata": item.target_metadata,
+        "rival_prototype_metadata": item.rival_metadata,
+        "anchor": "zero" if np.allclose(item.anchor, 0.0) else "provided_vector",
+    }
+    return api.native_dynamic_fpde_explain_one(
+        item.X,
+        p_target=item.p_target,
+        p_rival=item.p_rival,
+        target_label=item.target_label,
+        rival_label=item.rival_label,
+        mode=mode,
+        lambda_hyb=float(lambda_hyb),
+        normalize=normalize,
+        anchor=item.anchor,
+        feature_names=feature_names,
+        timestamps_sec=timestamps,
+        details=details,
+    )
+
+
+def _native_diff_fpde_cuda(X_batch: np.ndarray, target_batch: np.ndarray, rival_batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
+    target_gpu = cp.asarray(target_batch, dtype=cp.float64)[:, None, :]
+    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)[:, None, :]
+    attrs = (X_gpu - rival_gpu) ** 2 - (X_gpu - target_gpu) ** 2
+    evidences = cp.sum(attrs, axis=(1, 2))
+    return cp.asnumpy(attrs), cp.asnumpy(evidences)
+
+
+def _native_cos_fpde_cuda(
+    X_batch: np.ndarray,
+    target_batch: np.ndarray,
+    rival_batch: np.ndarray,
+    anchor_batch: np.ndarray,
+    *,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    X_gpu = cp.asarray(X_batch, dtype=cp.float64)
+    target_gpu = cp.asarray(target_batch, dtype=cp.float64)
+    rival_gpu = cp.asarray(rival_batch, dtype=cp.float64)
+    anchor_gpu = cp.asarray(anchor_batch, dtype=cp.float64)
+    z = X_gpu - anchor_gpu[:, None, :]
+    q_target = target_gpu - anchor_gpu
+    q_rival = rival_gpu - anchor_gpu
+    z_norm = cp.linalg.norm(z, axis=2, keepdims=True)
+    target_norm = cp.linalg.norm(q_target, axis=1)[:, None, None]
+    rival_norm = cp.linalg.norm(q_rival, axis=1)[:, None, None]
+    attrs = (z * q_target[:, None, :]) / ((z_norm + float(eps)) * (target_norm + float(eps)))
+    attrs -= (z * q_rival[:, None, :]) / ((z_norm + float(eps)) * (rival_norm + float(eps)))
+    evidences = cp.sum(attrs, axis=(1, 2))
+    return cp.asnumpy(attrs), cp.asnumpy(evidences)
+
+
+def _native_hyb_fpde_cuda(
+    X_batch: np.ndarray,
+    target_batch: np.ndarray,
+    rival_batch: np.ndarray,
+    anchor_batch: np.ndarray,
+    *,
+    lambda_hyb: float,
+    normalize: str,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    diff_attr, diff_evidence = _native_diff_fpde_cuda(X_batch, target_batch, rival_batch)
+    cos_attr, cos_evidence = _native_cos_fpde_cuda(X_batch, target_batch, rival_batch, anchor_batch, eps=eps)
+    diff_gpu = cp.asarray(diff_attr, dtype=cp.float64)
+    cos_gpu = cp.asarray(cos_attr, dtype=cp.float64)
+    if normalize == "l1":
+        diff_scale = cp.sum(cp.abs(diff_gpu), axis=(1, 2), keepdims=True) + float(eps)
+        cos_scale = cp.sum(cp.abs(cos_gpu), axis=(1, 2), keepdims=True) + float(eps)
+        diff_part = diff_gpu / diff_scale
+        cos_part = cos_gpu / cos_scale
+    elif normalize == "none":
+        diff_scale = cp.ones((diff_gpu.shape[0], 1, 1), dtype=cp.float64)
+        cos_scale = cp.ones((cos_gpu.shape[0], 1, 1), dtype=cp.float64)
+        diff_part = diff_gpu
+        cos_part = cos_gpu
+    else:
+        raise ValueError("normalize must be none or l1")
+    attrs = float(lambda_hyb) * diff_part + (1.0 - float(lambda_hyb)) * cos_part
+    evidences = cp.sum(attrs, axis=(1, 2))
+    return (
+        cp.asnumpy(attrs),
+        cp.asnumpy(evidences),
+        {
+            "diff_evidence": np.asarray(diff_evidence, dtype=float),
+            "cos_evidence": np.asarray(cos_evidence, dtype=float),
+            "diff_scale": cp.asnumpy(diff_scale.reshape(-1)),
+            "cos_scale": cp.asnumpy(cos_scale.reshape(-1)),
+        },
+    )
+
+
+def _explanation_from_cuda(
+    api: SimpleNamespace,
+    item: _ResolvedNativeInput,
+    *,
+    mode: str,
+    attributions: np.ndarray,
+    evidence: float,
+    lambda_hyb: float,
+    normalize: str,
+    hyb_details: dict[str, Any] | None = None,
+) -> Any:
+    attr = np.asarray(attributions, dtype=float)
+    time_importance = np.sum(attr, axis=1)
+    feature_importance = np.sum(attr, axis=0)
+    details: dict[str, Any] = {
+        "time_mode": "native",
+        "temporal_resampling": False,
+        "temporal_pooling": False,
+        "prototype_kind": "feature_vector",
+        "input_shape": tuple(item.X.shape),
+        "output_shape": tuple(attr.shape),
+        "target_prototype_metadata": item.target_metadata,
+        "rival_prototype_metadata": item.rival_metadata,
+        "normalize": normalize,
+        "lambda_hyb": float(lambda_hyb) if mode == "dynamic_hyb" else None,
+        "backend": "cuda",
+    }
+    if hyb_details:
+        details.update(hyb_details)
+    diff_positive = -float(np.sum((item.X - item.p_target) ** 2))
+    diff_negative = -float(np.sum((item.X - item.p_rival) ** 2))
+    positive_score = diff_positive
+    negative_score = diff_negative
+    if mode == "dynamic_cos":
+        positive_score = float(np.sum(attr + 0.0))
+        negative_score = 0.0
+    elif mode == "dynamic_hyb" and normalize == "none":
+        positive_score = float(lambda_hyb) * diff_positive
+        negative_score = float(lambda_hyb) * diff_negative
+    return api.NativeTimeDynamicFPDEExplanation(
+        mode=mode,
+        evidence=float(evidence),
+        attributions=attr.astype(float, copy=True),
+        time_importance=time_importance.astype(float, copy=True),
+        feature_importance=feature_importance.astype(float, copy=True),
+        positive_score=float(positive_score),
+        negative_score=float(negative_score),
+        target_label=item.target_label,
+        rival_label=item.rival_label,
+        exactness_residual=float(evidence - np.sum(attr)),
+        details=details,
+    )
+
+
+def _explain_batch_cuda(
+    api: SimpleNamespace,
+    items: list[_ResolvedNativeInput],
+    *,
+    mode: str,
+    lambda_hyb: float,
+    normalize: str,
+) -> dict[str, tuple[Any, float]]:
+    if not items:
+        return {}
+    _ensure_cuda_backend()
+    groups: dict[tuple[int, int], list[_ResolvedNativeInput]] = {}
+    for item in items:
+        groups.setdefault(tuple(item.X.shape), []).append(item)
+    out: dict[str, tuple[Any, float]] = {}
+    for group_items in groups.values():
+        X_batch = np.stack([item.X for item in group_items], axis=0)
+        target_batch = np.stack([item.p_target for item in group_items], axis=0)
+        rival_batch = np.stack([item.p_rival for item in group_items], axis=0)
+        anchor_batch = np.stack([item.anchor for item in group_items], axis=0)
+        start = time.perf_counter()
+        if mode == "dynamic_diff":
+            attrs, evidences = _native_diff_fpde_cuda(X_batch, target_batch, rival_batch)
+            details = None
+        elif mode == "dynamic_cos":
+            attrs, evidences = _native_cos_fpde_cuda(X_batch, target_batch, rival_batch, anchor_batch)
+            details = None
+        elif mode == "dynamic_hyb":
+            attrs, evidences, details = _native_hyb_fpde_cuda(
+                X_batch,
+                target_batch,
+                rival_batch,
+                anchor_batch,
+                lambda_hyb=lambda_hyb,
+                normalize=normalize,
+            )
+        else:
+            raise ValueError(f"unsupported Native-Time Dynamic-FPDE mode: {mode}")
+        per_sample_runtime = (time.perf_counter() - start) / len(group_items)
+        for idx, item in enumerate(group_items):
+            hyb_details = None
+            if details is not None:
+                hyb_details = {
+                    "diff_evidence": float(details["diff_evidence"][idx]),
+                    "cos_evidence": float(details["cos_evidence"][idx]),
+                    "diff_scale": float(details["diff_scale"][idx]),
+                    "cos_scale": float(details["cos_scale"][idx]),
+                }
+            out[item.sample.sample_id] = (
+                _explanation_from_cuda(
+                    api,
+                    item,
+                    mode=mode,
+                    attributions=np.asarray(attrs[idx], dtype=float),
+                    evidence=float(np.asarray(evidences)[idx]),
+                    lambda_hyb=lambda_hyb,
+                    normalize=normalize,
+                    hyb_details=hyb_details,
+                ),
+                per_sample_runtime,
+            )
+    return out
+
+
+def _baseline_explanation(api: SimpleNamespace, base: Any, scores: np.ndarray, *, method: str) -> Any:
+    return api.NativeTimeDynamicFPDEExplanation(
+        mode=method,
+        evidence=float(base.evidence),
+        attributions=np.zeros_like(base.attributions),
+        time_importance=np.asarray(scores, dtype=float),
+        feature_importance=np.zeros(base.attributions.shape[1], dtype=float),
+        positive_score=float(base.positive_score),
+        negative_score=float(base.negative_score),
+        target_label=base.target_label,
+        rival_label=base.rival_label,
+        exactness_residual=float("nan"),
+        details={"baseline": method, "ranking_only": True, "time_mode": "native", "prototype_kind": "feature_vector"},
+    )
+
+
+def _validate_native_output(X: np.ndarray, explanation: Any, item: _ResolvedNativeInput) -> None:
+    phi = np.asarray(explanation.attributions, dtype=float)
+    if phi.shape != X.shape:
+        raise ValueError(f"Native-Time Phi shape must equal X shape, got Phi={phi.shape}, X={X.shape}")
+    if item.p_target.shape != (X.shape[1],):
+        raise ValueError("target prototype must have shape (F,)")
+    if item.p_rival.shape != (X.shape[1],):
+        raise ValueError("rival prototype must have shape (F,)")
+    arrays = [X, phi, item.p_target, item.p_rival, np.asarray([explanation.evidence], dtype=float)]
+    if not all(np.all(np.isfinite(arr)) for arr in arrays):
+        raise ValueError("Native-Time result contains NaN or inf")
+    if "resampled_length" in getattr(explanation, "details", {}):
+        raise ValueError("Native-Time results must not contain a resampled_length field")
+
+
+def _row_from_result(
+    *,
+    fold: int,
+    seed: int,
+    item: _ResolvedNativeInput,
+    method: str,
+    lambda_hyb: float | str,
+    normalize: str,
+    anchor: str,
+    explanation: Any,
+    selection_explanation: Any,
+    curves: dict[str, Any],
+    runtime_sec: float,
+    random_repetition: int | str = "",
+) -> dict[str, object]:
+    _validate_native_output(item.X, explanation, item)
+    residual_value = float(explanation.exactness_residual)
+    residual: float | str = "" if not np.isfinite(residual_value) else residual_value
+    prototype_margin = float(explanation.evidence)
+    selection_margin = float(selection_explanation.evidence)
+    evidence_role = "evaluation_margin" if method.endswith("_baseline") else "explanation_margin"
+    target_meta = item.target_metadata
+    rival_meta = item.rival_metadata
+    return {
+        "dataset": "esc50",
+        "fold": int(fold),
+        "seed": int(seed),
+        "sample_id": item.sample.sample_id,
+        "true_label": item.sample.category,
+        "target_label": explanation.target_label,
+        "rival_label": explanation.rival_label,
+        "common_rival_label": selection_explanation.rival_label,
+        "method": method,
+        "lambda_hyb": lambda_hyb,
+        "normalize": normalize,
+        "anchor": anchor,
+        "evidence": prototype_margin,
+        "evidence_role": evidence_role,
+        "evaluation_evidence": prototype_margin,
+        "evaluation_margin": prototype_margin,
+        "prototype_margin": prototype_margin,
+        "prototype_margin_positive": bool(prototype_margin > 0.0),
+        "prototype_margin_sign": _margin_sign(prototype_margin),
+        "selection_margin": selection_margin,
+        "selection_margin_positive": bool(selection_margin > 0.0),
+        "selection_margin_sign": _margin_sign(selection_margin),
+        "selection_margin_source": "native_dynamic_diff",
+        "exactness_residual": residual,
+        "abs_exactness_residual": "" if residual == "" else abs(float(residual)),
+        "deletion_drop_auc": float(curves["deletion_drop_auc"]),
+        "insertion_gain_auc": float(curves["insertion_gain_auc"]),
+        "combined_score": float(curves["combined_score"]),
+        "runtime_sec": float(runtime_sec),
+        "T": int(item.X.shape[0]),
+        "F": int(item.X.shape[1]),
+        "phi_shape": str(tuple(np.asarray(explanation.attributions).shape)),
+        "x_shape": str(tuple(item.X.shape)),
+        "shape_preserved": bool(np.asarray(explanation.attributions).shape == item.X.shape),
+        "target_prototype_source_sample_id": target_meta.get("source_sample_id", ""),
+        "target_prototype_source_frame_index": target_meta.get("source_frame_index", ""),
+        "target_prototype_source_time_sec": target_meta.get("source_time_sec", ""),
+        "target_prototype_label": target_meta.get("label", ""),
+        "rival_prototype_source_sample_id": rival_meta.get("source_sample_id", ""),
+        "rival_prototype_source_frame_index": rival_meta.get("source_frame_index", ""),
+        "rival_prototype_source_time_sec": rival_meta.get("source_time_sec", ""),
+        "rival_prototype_label": rival_meta.get("label", ""),
+        "prototype_mode": target_meta.get("prototype_mode", "selected_exemplar"),
+        "prototype_selection_rule": target_meta.get("selection_rule", ""),
+        "random_repetition": random_repetition,
+        "aggregation_unit": "sample_repetition" if random_repetition != "" else "sample",
+    }
+
+
+def _explain_and_score(
+    api: SimpleNamespace,
+    item: _ResolvedNativeInput,
+    *,
+    method: str,
+    mode: str,
+    lambda_hyb: float,
+    normalize: str,
+    feature_names: list[str],
+    feature_config: FeatureConfig,
+    steps: int,
+    backend: str,
+) -> tuple[Any, dict[str, Any], float]:
+    if backend == "cuda":
+        explanation, runtime = _explain_batch_cuda(api, [item], mode=mode, lambda_hyb=lambda_hyb, normalize=normalize)[item.sample.sample_id]
+    else:
+        start = time.perf_counter()
+        explanation = _explain_one_cpu(
+            api,
+            item,
+            mode=mode,
+            lambda_hyb=lambda_hyb,
+            normalize=normalize,
+            feature_names=feature_names,
+            feature_config=feature_config,
+        )
+        runtime = time.perf_counter() - start
+    curve_start = time.perf_counter()
+    curves = native_temporal_deletion_insertion_curves(explanation, steps=steps)
+    runtime += time.perf_counter() - curve_start
+    return explanation, curves, runtime
+
+
+def _select_lambda(
+    api: SimpleNamespace,
+    val_samples: list[ESCSample],
+    standardized: dict[str, np.ndarray],
+    prototypes: dict[str, NativePrototype],
+    *,
+    lambda_grid: list[float] | None,
+    lambda_hyb: float,
+    normalize: str,
+    anchor: str,
+    class_means: dict[str, np.ndarray],
+    global_mean: np.ndarray,
+    feature_names: list[str],
+    feature_config: FeatureConfig,
+    steps: int,
+) -> tuple[float, list[dict[str, object]]]:
+    candidates = list(lambda_grid) if lambda_grid else [float(lambda_hyb)]
+    rows: list[dict[str, object]] = []
+    best_lambda = float(candidates[0])
+    best_score = -float("inf")
+    for candidate in candidates:
+        scores: list[float] = []
+        deletion_scores: list[float] = []
+        insertion_scores: list[float] = []
+        for sample in val_samples:
+            selection_item = _resolve_native_input(
+                sample,
+                standardized[sample.sample_id],
+                prototypes,
+                rival_label=None,
+                anchor_mode=anchor,
+                class_means=class_means,
+                global_mean=global_mean,
+            )
+            selection = _explain_one_cpu(
+                api,
+                selection_item,
+                mode="dynamic_diff",
+                lambda_hyb=candidate,
+                normalize=normalize,
+                feature_names=feature_names,
+                feature_config=feature_config,
+            )
+            item = _resolve_native_input(
+                sample,
+                standardized[sample.sample_id],
+                prototypes,
+                rival_label=selection.rival_label,
+                anchor_mode=anchor,
+                class_means=class_means,
+                global_mean=global_mean,
+            )
+            exp = _explain_one_cpu(
+                api,
+                item,
+                mode="dynamic_hyb",
+                lambda_hyb=candidate,
+                normalize=normalize,
+                feature_names=feature_names,
+                feature_config=feature_config,
+            )
+            curves = native_temporal_deletion_insertion_curves(exp, steps=steps)
+            scores.append(float(curves["combined_score"]))
+            deletion_scores.append(float(curves["deletion_drop_auc"]))
+            insertion_scores.append(float(curves["insertion_gain_auc"]))
+        mean_score = float(np.mean(scores)) if scores else float("nan")
+        rows.append(
+            {
+                "lambda_hyb": float(candidate),
+                "mean_combined_score": mean_score,
+                "mean_deletion_drop_auc": float(np.mean(deletion_scores)) if deletion_scores else "",
+                "mean_insertion_gain_auc": float(np.mean(insertion_scores)) if insertion_scores else "",
+                "n_eval_samples": len(scores),
+                "selection_mode": "fixed" if not lambda_grid else "validation_grid",
+            }
+        )
+        if mean_score > best_score:
+            best_score = mean_score
+            best_lambda = float(candidate)
+    return best_lambda, rows
+
+
+def _maybe_write_example_figures(output_dir: Path, sample: ESCSample, explanation: Any, curves: dict[str, Any]) -> None:
     try:
         import matplotlib.pyplot as plt
         from fpde import plot_dynamic_attribution_heatmap, plot_dynamic_time_importance
@@ -746,209 +783,186 @@ def run_fold(
     output_dir: Path,
     mode: str,
     seed: int,
-    prototype_length: int | None,
-    lambda_grid: list[float],
+    lambda_hyb: float,
+    lambda_grid: list[float] | None,
     feature_config: FeatureConfig,
+    prototype_mode: str,
+    prototype_selection: str,
+    anchor: str,
+    normalize: str,
     skip_errors: bool,
     steps: int,
     random_repetitions: int,
     backend: str = "cpu",
     make_figures: bool = False,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]:
+    if prototype_mode != "exemplar":
+        raise ValueError("Native-Time Dynamic-FPDE currently supports only --prototype-mode exemplar")
+    api = _require_native_fpde()
     _ensure_backend(backend)
     mode_config = get_mode_config(mode)
-    proto_len = prototype_length or mode_config.prototype_length
     train_samples, val_samples, test_samples = split_esc50(samples, fold=fold, mode_config=mode_config, seed=seed)
     all_samples = train_samples + val_samples + test_samples
-    raw_features, feature_names, feature_errors = _load_feature_map(
+    feature_map, feature_names, feature_errors = _load_feature_map(
         all_samples,
         output_dir=output_dir,
         config=feature_config,
         skip_errors=skip_errors,
     )
-    train_samples = [sample for sample in train_samples if sample.sample_id in raw_features]
-    val_samples = [sample for sample in val_samples if sample.sample_id in raw_features]
-    test_samples = [sample for sample in test_samples if sample.sample_id in raw_features]
+    train_samples = [sample for sample in train_samples if sample.sample_id in feature_map]
+    val_samples = [sample for sample in val_samples if sample.sample_id in feature_map]
+    test_samples = [sample for sample in test_samples if sample.sample_id in feature_map]
     if not train_samples or not val_samples or not test_samples:
-        raise RuntimeError("train, validation, and test splits must all contain extracted features")
+        raise RuntimeError("train, validation, and test splits must all contain loaded acoustic feature matrices")
 
-    standardizer = fit_standardizer([raw_features[sample.sample_id] for sample in train_samples], feature_names)
+    standardizer = fit_standardizer([feature_map[sample.sample_id] for sample in train_samples], feature_names)
     standardized = {
-        sample.sample_id: transform_features(raw_features[sample.sample_id], standardizer)
+        sample.sample_id: transform_features(feature_map[sample.sample_id], standardizer)
         for sample in all_samples
-        if sample.sample_id in raw_features
+        if sample.sample_id in feature_map
     }
-    context = prepare_dynamic_fpde_context(
-        [standardized[sample.sample_id] for sample in train_samples],
-        labels_for(train_samples),
-        prototype_length=proto_len,
+    train_feature_map = {sample.sample_id: standardized[sample.sample_id] for sample in train_samples}
+    train_label_map = {sample.sample_id: sample.category for sample in train_samples}
+    prototypes = select_class_exemplar_prototypes(
+        train_feature_map,
+        train_label_map,
+        selection_rule=prototype_selection,
+        feature_config=feature_config,
+        feature_names=feature_names,
     )
-    selection = select_dynamic_lambda(
-        [standardized[sample.sample_id] for sample in val_samples],
-        labels_for(val_samples),
-        context,
+    class_means, global_mean = _class_means(train_feature_map, train_samples)
+    selected_lambda, selection_rows = _select_lambda(
+        api,
+        val_samples,
+        standardized,
+        prototypes,
         lambda_grid=lambda_grid,
+        lambda_hyb=lambda_hyb,
+        normalize=normalize,
+        anchor=anchor,
+        class_means=class_means,
+        global_mean=global_mean,
+        feature_names=feature_names,
+        feature_config=feature_config,
         steps=steps,
     )
-    selected_lambda = float(selection["best_lambda"])
-    lambda_rows = [{"dataset": "esc50", "fold": int(fold), "seed": int(seed), **row} for row in selection["rows"]]
+    lambda_rows = [{"dataset": "esc50", "fold": int(fold), "seed": int(seed), **row} for row in selection_rows]
+
     sample_rows: list[dict[str, object]] = []
-    first_plot_payload: tuple[ESCSample, DynamicFPDEExplanation, dict[str, Any]] | None = None
-    cuda_explanations = (
-        _prepare_cuda_explanations(test_samples, standardized, context, selected_lambda=selected_lambda)
-        if backend == "cuda"
-        else {}
-    )
-
+    first_plot_payload: tuple[ESCSample, Any, dict[str, Any]] | None = None
     for sample in test_samples:
-        X = standardized[sample.sample_id]
-        raw_X = raw_features[sample.sample_id]
-        if backend == "cuda":
-            selection_explanation, _ = cuda_explanations[(sample.sample_id, "selection")]
-        else:
-            selection_explanation = dynamic_fpde_explain_one(
-                X,
-                context,
-                target_label=sample.category,
-                rival_label=None,
-                mode="dynamic_diff",
-            )
-        common_rival_label = selection_explanation.rival_label
-        for method in ("dynamic_diff", "dynamic_cos"):
-            if backend == "cuda":
-                explanation, runtime = cuda_explanations[(sample.sample_id, method)]
-                curve_start = time.perf_counter()
-                curves = temporal_deletion_insertion_curves(
-                    X,
-                    explanation,
-                    context,
-                    target_label=sample.category,
-                    rival_label=explanation.rival_label,
-                    steps=steps,
-                )
-                runtime += time.perf_counter() - curve_start
-            else:
-                explanation, curves, runtime = _explain_and_score(
-                    X,
-                    context,
-                    sample=sample,
-                    mode=method,
-                    rival_label=common_rival_label,
-                    steps=steps,
-                )
-            sample_rows.append(
-                _row_from_result(
-                    fold=fold,
-                    seed=seed,
-                    sample=sample,
-                    method=method,
-                    lambda_hyb="",
-                    explanation=explanation,
-                    selection_explanation=selection_explanation,
-                    curves=curves,
-                    runtime_sec=runtime,
-                )
-            )
-
-        if backend == "cuda":
-            explanation, runtime = cuda_explanations[(sample.sample_id, "dynamic_hyb")]
-            curve_start = time.perf_counter()
-            curves = temporal_deletion_insertion_curves(
-                X,
-                explanation,
-                context,
-                target_label=sample.category,
-                rival_label=explanation.rival_label,
-                steps=steps,
-            )
-            runtime += time.perf_counter() - curve_start
-        else:
-            explanation, curves, runtime = _explain_and_score(
-                X,
-                context,
-                sample=sample,
-                mode="dynamic_hyb",
-                rival_label=common_rival_label,
-                lambda_hyb=selected_lambda,
-                steps=steps,
-            )
-        if first_plot_payload is None:
-            first_plot_payload = (sample, explanation, curves)
-        sample_rows.append(
-            _row_from_result(
-                fold=fold,
-                seed=seed,
-                sample=sample,
-                method="dynamic_hyb",
-                lambda_hyb=selected_lambda,
-                explanation=explanation,
-                selection_explanation=selection_explanation,
-                curves=curves,
-                runtime_sec=runtime,
-            )
+        selection_item = _resolve_native_input(
+            sample,
+            standardized[sample.sample_id],
+            prototypes,
+            rival_label=None,
+            anchor_mode=anchor,
+            class_means=class_means,
+            global_mean=global_mean,
         )
-
-        energy_scores = energy_frame_scores(raw_X, feature_names)
-        explanation, curves, runtime = _score_baseline(
-            X,
-            context,
-            sample=sample,
-            scores=energy_scores,
-            method="energy_baseline",
-            rival_label=common_rival_label,
+        selection_explanation, _, _ = _explain_and_score(
+            api,
+            selection_item,
+            method="dynamic_diff",
+            mode="dynamic_diff",
+            lambda_hyb=selected_lambda,
+            normalize=normalize,
+            feature_names=feature_names,
+            feature_config=feature_config,
             steps=steps,
+            backend=backend,
         )
-        sample_rows.append(
-            _row_from_result(
-                fold=fold,
-                seed=seed,
-                sample=sample,
-                method="energy_baseline",
-                lambda_hyb="",
-                explanation=explanation,
-                selection_explanation=selection_explanation,
-                curves=curves,
-                runtime_sec=runtime,
-            )
+        item = _resolve_native_input(
+            sample,
+            standardized[sample.sample_id],
+            prototypes,
+            rival_label=selection_explanation.rival_label,
+            anchor_mode=anchor,
+            class_means=class_means,
+            global_mean=global_mean,
         )
 
-        for repetition in range(random_repetitions):
-            random_scores = random_frame_scores(
-                X.shape[0],
-                seed=_stable_sample_seed(seed, sample.sample_id),
-                repetition=repetition,
-            )
-            explanation, curves, runtime = _score_baseline(
-                X,
-                context,
-                sample=sample,
-                scores=random_scores,
-                method="random_baseline",
-                rival_label=common_rival_label,
+        for method, fpde_mode in (("dynamic_diff", "dynamic_diff"), ("dynamic_cos", "dynamic_cos"), ("dynamic_hyb", "dynamic_hyb")):
+            explanation, curves, runtime = _explain_and_score(
+                api,
+                item,
+                method=method,
+                mode=fpde_mode,
+                lambda_hyb=selected_lambda,
+                normalize=normalize,
+                feature_names=feature_names,
+                feature_config=feature_config,
                 steps=steps,
+                backend=backend,
             )
+            if method == "dynamic_hyb" and first_plot_payload is None:
+                first_plot_payload = (sample, explanation, curves)
             sample_rows.append(
                 _row_from_result(
                     fold=fold,
                     seed=seed,
-                    sample=sample,
-                    method="random_baseline",
-                    lambda_hyb="",
+                    item=item,
+                    method=method,
+                    lambda_hyb=selected_lambda if method == "dynamic_hyb" else "",
+                    normalize=normalize,
+                    anchor=anchor,
                     explanation=explanation,
                     selection_explanation=selection_explanation,
                     curves=curves,
                     runtime_sec=runtime,
-                    random_repetition=repetition,
                 )
             )
+
+        for method, scores_iter in (
+            ("energy_baseline", [energy_frame_scores(feature_map[sample.sample_id], feature_names)]),
+            (
+                "random_baseline",
+                [
+                    random_frame_scores(
+                        item.X.shape[0],
+                        seed=_stable_sample_seed(seed, sample.sample_id),
+                        repetition=repetition,
+                    )
+                    for repetition in range(random_repetitions)
+                ],
+            ),
+        ):
+            for repetition, scores in enumerate(scores_iter):
+                start = time.perf_counter()
+                explanation = _baseline_explanation(api, selection_explanation, scores, method=method)
+                curves = native_temporal_deletion_insertion_curves(
+                    explanation,
+                    ranking_scores=scores,
+                    evidence_by_frame=selection_explanation.time_importance,
+                    steps=steps,
+                )
+                runtime = time.perf_counter() - start
+                sample_rows.append(
+                    _row_from_result(
+                        fold=fold,
+                        seed=seed,
+                        item=item,
+                        method=method,
+                        lambda_hyb="",
+                        normalize=normalize,
+                        anchor=anchor,
+                        explanation=explanation,
+                        selection_explanation=selection_explanation,
+                        curves=curves,
+                        runtime_sec=runtime,
+                        random_repetition=repetition if method == "random_baseline" else "",
+                    )
+                )
 
     _write_json(
-        output_dir / f"feature_config_fold_{fold}.json",
+        output_dir / f"native_time_feature_config_fold_{fold}.json",
         {
             "feature_config": asdict(feature_config),
             "feature_names": feature_names,
             "standardizer": standardizer.to_json_dict(),
-            "non_finite_policy": "np.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)",
+            "prototype_metadata": {label: proto.metadata for label, proto in prototypes.items()},
+            "input_space": "frame-level acoustic feature matrices",
+            "primary_output": "Phi with shape equal to X for each clip",
         },
     )
     if first_plot_payload is not None:
@@ -959,6 +973,7 @@ def run_fold(
                 "sample_id": sample.sample_id,
                 "curves": curves,
                 "time_importance": explanation.time_importance.tolist(),
+                "phi_shape": tuple(explanation.attributions.shape),
             },
         )
         if make_figures:
@@ -981,37 +996,51 @@ def _maybe_write_figures(output_dir: Path, sample_rows: list[dict[str, object]],
         print(f"Skipping optional figures: {exc}", file=sys.stderr)
 
 
+class _LegacyUnsupportedAction(argparse.Action):
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: Any, option_string: str | None = None) -> None:
+        parser.error(f"{option_string} is legacy resampled-time Dynamic-FPDE and is unsupported in Native-Time mode")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Dynamic-FPDE on ESC-50 frame-level audio features.")
+    parser = argparse.ArgumentParser(description="Run Native-Time Dynamic-FPDE on ESC-50 frame-level acoustic features.")
     parser.add_argument("--dataset", default="esc50", choices=["esc50"])
     parser.add_argument("--dataset-root", type=Path, default=Path("data/ESC-50"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/dynamic_fpde_esc50_smoke"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs/native_time_dynamic_fpde_esc50_smoke"))
     parser.add_argument("--mode", default="smoke", choices=["smoke", "pilot", "full"])
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--fold", type=int, default=1)
     parser.add_argument("--folds", default=None, help="Comma-separated ESC-50 folds. Overrides --fold.")
-    parser.add_argument("--prototype-length", type=int, default=None)
-    parser.add_argument("--lambda-grid", default="0.0,0.25,0.5,0.75,1.0")
+    parser.add_argument("--prototype-mode", default="exemplar", choices=["exemplar"])
+    parser.add_argument("--prototype-selection", default="nearest_to_class_centroid_frame", choices=["medoid_frame", "nearest_to_class_centroid_frame"])
+    parser.add_argument("--anchor", default="zero", choices=["zero", "class_mean", "global_mean"])
+    parser.add_argument("--normalize", default="none", choices=["none", "l1"])
+    parser.add_argument("--lambda-hyb", type=float, default=0.5)
+    parser.add_argument("--lambda-grid", default=None, help="Optional comma-separated validation grid for lambda_hyb.")
     parser.add_argument("--backend", choices=["cpu", "cuda"], default="cpu")
-    parser.add_argument("--sr", type=int, default=22050)
-    parser.add_argument("--n-fft", type=int, default=2048)
+    parser.add_argument("--target-sr", "--sr", type=int, default=16000)
+    parser.add_argument("--frame-length", type=int, default=1024)
     parser.add_argument("--hop-length", type=int, default=512)
-    parser.add_argument("--n-mfcc", type=int, default=13)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--skip-errors", action="store_true")
     parser.add_argument("--make-figures", action="store_true")
+    parser.add_argument("--prototype-length", nargs="?", action=_LegacyUnsupportedAction, help=argparse.SUPPRESS)
+    parser.add_argument("--duration-sec", nargs="?", action=_LegacyUnsupportedAction, help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not 0.0 <= float(args.lambda_hyb) <= 1.0:
+        raise ValueError("--lambda-hyb must be in [0, 1]")
     _ensure_backend(args.backend)
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     samples = read_esc50_metadata(args.dataset_root)
     folds = parse_folds(args.fold, args.folds)
-    lambda_grid = [float(value.strip()) for value in args.lambda_grid.split(",") if value.strip()]
-    feature_config = FeatureConfig(sr=args.sr, n_fft=args.n_fft, hop_length=args.hop_length, n_mfcc=args.n_mfcc)
+    lambda_grid = [float(value.strip()) for value in args.lambda_grid.split(",") if value.strip()] if args.lambda_grid else None
+    if lambda_grid and any(value < 0.0 or value > 1.0 for value in lambda_grid):
+        raise ValueError("--lambda-grid values must be in [0, 1]")
+    feature_config = FeatureConfig(target_sr=args.target_sr, frame_length=args.frame_length, hop_length=args.hop_length)
     random_repetitions = 1 if args.mode == "smoke" else 5
 
     _write_json(
@@ -1023,12 +1052,19 @@ def main(argv: list[str] | None = None) -> int:
             "mode": args.mode,
             "seed": args.seed,
             "folds": folds,
-            "prototype_length": args.prototype_length,
+            "prototype_mode": args.prototype_mode,
+            "prototype_selection": args.prototype_selection,
+            "anchor": args.anchor,
+            "normalize": args.normalize,
+            "lambda_hyb": args.lambda_hyb,
             "lambda_grid": lambda_grid,
             "backend": args.backend,
             "steps": args.steps,
             "random_repetitions": random_repetitions,
             "fpde_source": "git+https://github.com/fpde-xai/fpde.git@dynamic",
+            "time_mode": "native",
+            "temporal_resampling": False,
+            "temporal_pooling": False,
         },
     )
     _write_json(
@@ -1039,18 +1075,19 @@ def main(argv: list[str] | None = None) -> int:
             "numpy": np.__version__,
             "fpde": _package_version("fpde"),
             "backend": args.backend,
-            "librosa": _package_version("librosa"),
             "soundfile": _package_version("soundfile"),
             "seed": args.seed,
         },
     )
     _write_json(
-        output_dir / "feature_config.json",
+        output_dir / "native_time_feature_config.json",
         {
             "feature_config": asdict(feature_config),
-            "feature_set": "rms, zcr, spectral centroid, bandwidth, rolloff, flatness, MFCC 1..n_mfcc",
-            "input_space": "frame-level acoustic features, not raw waveform samples",
-            "non_finite_policy": "np.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)",
+            "input_space": "frame-level acoustic feature matrices, not raw waveform samples",
+            "primary_output": "Phi_i in R^{T_i x F} with Phi_i.shape == X_i.shape",
+            "allowed_preprocessing": "decode audio, resample audio to target_sr, convert to mono, convert to frame-level features, standardize features",
+            "forbidden_preprocessing": "fixed-length temporal resampling, temporal pooling, padding variable-length samples into a dense tensor, DTW alignment",
+            "sampling_rate_invariance": "Dynamic-FPDE itself is not sampling-rate invariant; audio is normalized to target_sr before feature extraction",
         },
     )
 
@@ -1064,9 +1101,13 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=output_dir,
             mode=args.mode,
             seed=args.seed,
-            prototype_length=args.prototype_length,
+            lambda_hyb=args.lambda_hyb,
             lambda_grid=lambda_grid,
             feature_config=feature_config,
+            prototype_mode=args.prototype_mode,
+            prototype_selection=args.prototype_selection,
+            anchor=args.anchor,
+            normalize=args.normalize,
             skip_errors=args.skip_errors,
             steps=args.steps,
             random_repetitions=random_repetitions,
@@ -1092,7 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
     generate_tables(results_dir, output_dir / "tables")
     if args.make_figures:
         _maybe_write_figures(output_dir, all_sample_rows, all_lambda_rows)
-    print(f"Wrote Dynamic-FPDE audio experiment outputs to {output_dir}")
+    print(f"Wrote Native-Time Dynamic-FPDE audio experiment outputs to {output_dir}")
     return 0
 
 

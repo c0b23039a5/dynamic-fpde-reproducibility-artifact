@@ -1,21 +1,23 @@
-# Dynamic-FPDE Audio Experiments
+# Native-Time Dynamic-FPDE Audio Experiments
 
-This artifact installs Dynamic-FPDE from the `dynamic` branch of the FPDE
-repository:
+This artifact treats **Native-Time Dynamic-FPDE** as the intended
+Dynamic-FPDE formulation. The older resampled-time, `prototype_length`-based
+path is legacy and benchmark-oriented only.
 
-```text
-fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic
-```
+For each audio clip, the runner builds a frame-level acoustic feature matrix
+`X_i in R^{T_i x F}`. `T_i` may differ across clips and `F` is shared. The main
+explanation output is `Phi_i in R^{T_i x F}` with the invariant
+`Phi_i.shape == X_i.shape`. `time_importance = sum_f Phi[t, f]` and
+`feature_importance = sum_t Phi[t, f]` are auxiliary summaries only.
 
-The experiment suite evaluates Dynamic-FPDE as a time-resolved
-prototype-directional explanation method for frame-level audio feature
-sequences. Dynamic-FPDE explains prototype evidence. It does not explain raw
-waveform samples, and the outputs are not causal explanations.
+The runner does not fixed-length-resample the time axis, temporally average,
+max/min/pool, pad variable-length samples into a dense tensor, or use DTW
+alignment. It does not claim verse/chorus alignment, raw waveform attribution,
+causal explanation, or black-box model faithfulness.
 
 ## Dataset
 
-The first supported dataset is ESC-50. The runner expects a local dataset with
-this structure:
+The first supported dataset is ESC-50. The runner expects:
 
 ```text
 data/ESC-50/
@@ -23,101 +25,142 @@ data/ESC-50/
   meta/esc50.csv
 ```
 
-The runner reads `meta/esc50.csv`, uses the provided `fold` column, and uses
-`category` as the class label. It does not download ESC-50 automatically.
+It reads `meta/esc50.csv`, uses `fold` for ESC-50 splits, and uses `category`
+as the class label. The artifact does not download or redistribute ESC-50.
 
-ESC-50 is distributed under Creative Commons Attribution-NonCommercial terms.
-This artifact does not redistribute the raw dataset. Users must obtain ESC-50
-separately and follow its license. If feature caches are redistributed, they
-should be treated as dataset-derived artifacts and handled according to the
-dataset license.
+## Audio And Features
 
-## Install
+Dynamic-FPDE operates on frame-level acoustic feature matrices, not waveform
+samples. Raw audio is decoded, resampled to a common `target_sr`, converted to
+mono, converted into frame-level acoustic features, standardized from the
+training fold, and then explained.
 
-```bash
-python -m pip install -e ".[dev,dynamic-audio,plot]"
+Dynamic-FPDE itself is not sampling-rate invariant. The common target sample
+rate is a preprocessing convention, not a mathematical invariance claim.
+
+Feature caches are written under `outputs/**/cache/features/` and remain
+ignored by git.
+
+## Native Prototypes
+
+Native-Time uses feature-space vector prototypes:
+
+```text
+p_target in R^F
+p_rival in R^F
 ```
 
-For NVIDIA CUDA acceleration, install the optional CUDA extra:
+It does not use time-series prototypes `P in R^{L x F}`. Prototype vectors are
+selected from real exemplar frames:
 
-```bash
-python -m pip install -e ".[dev,dynamic-audio,plot,cuda]"
+```text
+p_target = X_a[t_a, :]
+p_rival = X_b[t_b, :]
 ```
 
-## Run Smoke Mode
+The default selection rule is `nearest_to_class_centroid_frame`: collect all
+standardized training frames for a class, compute the class frame centroid in
+feature space, and choose the real frame nearest to that centroid. The
+alternative `medoid_frame` also returns a real frame. Prototype metadata records
+`source_sample_id`, `source_frame_index`, `source_time_sec`, `label`,
+`prototype_mode`, `selection_rule`, and feature names when available.
+
+For each test sample, the target prototype comes from the true class. The
+common rival prototype is selected from non-target class exemplar prototypes by
+nearest mean squared distance over native frames and is recorded as
+`common_rival_label`.
+
+## Run
 
 ```bash
 python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --dataset-root data/ESC-50 \
-  --output-dir outputs/dynamic_fpde_esc50_smoke \
+  --output-dir outputs/native_time_dynamic_fpde_esc50_smoke \
   --mode smoke \
   --fold 1 \
   --seed 0 \
-  --backend cpu \
-  --prototype-length 64
-```
-
-Smoke mode uses a small deterministic subset intended for quick local sanity
-checks. Smoke outputs are sanity-check artifacts only; use pilot or full mode
-for reportable experiment tables.
-
-## Run Pilot Mode
-
-```bash
-python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
-  --dataset-root data/ESC-50 \
-  --output-dir outputs/dynamic_fpde_esc50_pilot \
-  --mode pilot \
-  --fold 1 \
-  --seed 0 \
-  --backend cpu \
-  --prototype-length 128
-```
-
-## Run Full 5-Fold Mode
-
-`--folds` accepts a comma-separated ESC-50 fold list and runs each fold in the
-same invocation.
-
-```bash
-python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
-  --dataset-root data/ESC-50 \
-  --output-dir outputs/dynamic_fpde_esc50_full \
-  --mode full \
-  --folds 1,2,3,4,5 \
-  --seed 0 \
-  --prototype-length 128 \
+  --prototype-mode exemplar \
+  --prototype-selection nearest_to_class_centroid_frame \
+  --anchor zero \
+  --normalize none \
+  --lambda-hyb 0.5 \
   --backend cpu \
   --make-figures
 ```
 
-## Backend Selection
+`--folds` accepts a comma-separated ESC-50 fold list:
 
-The ESC-50 runner accepts `--backend cpu|cuda`; the default is `cpu`.
+```bash
+python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
+  --dataset-root data/ESC-50 \
+  --output-dir outputs/native_time_dynamic_fpde_esc50_full \
+  --mode full \
+  --folds 1,2,3,4,5 \
+  --seed 0 \
+  --prototype-mode exemplar \
+  --prototype-selection nearest_to_class_centroid_frame \
+  --anchor zero \
+  --normalize none \
+  --lambda-hyb 0.5 \
+  --backend cpu \
+  --make-figures
+```
 
-Feature extraction stays on CPU. Temporal resampling stays on CPU. CUDA mode is
-entered only after each sample, target prototype, rival prototype, and anchor
-has been resampled to common tensor shapes. The runner stacks compatible
-resampled samples as `(N, T, F)` batches, stacks target prototypes, rival
-prototypes, and anchors to matching `(N, T, F)` tensors, then evaluates the
-Dynamic-Diff, Dynamic-Cos, and Dynamic-Hyb attribution formulas with CuPy on
-the NVIDIA GPU. CUDA outputs are converted back to NumPy before metric
-calculation and CSV writing.
+`--prototype-length` is rejected with a Native-Time legacy-mode error.
 
-If `--backend cuda` is requested but CuPy or a usable CUDA device are
-unavailable, the runner raises a clear error and does not silently fall back to
-CPU.
+## Formulas
 
-Runtime excludes CPU feature extraction and CPU temporal resampling unless
-otherwise stated. CUDA acceleration applies only to batched Dynamic-FPDE tensor
-operations.
+Native-Time Dynamic-Diff:
+
+```text
+Phi_diff[t, f] =
+    (X[t, f] - p_rival[f]) ** 2
+  - (X[t, f] - p_target[f]) ** 2
+```
+
+Positive values support the target prototype. Negative values support the rival
+prototype.
+
+Native-Time Dynamic-Cos uses an anchor `a in R^F`, defaulting to zero:
+
+```text
+z[t] = X[t, :] - a
+q_target = p_target - a
+q_rival  = p_rival  - a
+```
+
+`||z[t]||` is computed per frame. `||q_target||` and `||q_rival||` are
+feature-vector norms. The implementation uses finite `eps` stabilization and
+must not produce NaN or inf.
+
+Native-Time Dynamic-Hyb:
+
+```text
+Phi_hyb = lambda_hyb * Phi_diff + (1 - lambda_hyb) * Phi_cos
+```
+
+For Native-Time, the default `normalize` is `none`. Optional `l1`
+normalization never alters, resamples, pools, or pads the time axis.
+
+## Backend
+
+`--backend cpu` uses the FPDE Native-Time API from
+`fpde-xai/fpde@dynamic`. If those APIs are not installed, the runner fails
+clearly and does not fall back to legacy resampled-time Dynamic-FPDE.
+
+`--backend cuda` requires CuPy and a usable CUDA device. CPU work still includes
+audio decode, audio resampling to `target_sr`, mono conversion, feature
+extraction, and feature standardization. CUDA acceleration applies only to
+Native-Time attribution tensor computation. Variable-length samples are not
+padded; CUDA grouping is limited to samples that naturally share the same
+`(T, F)`.
 
 ## Outputs
 
 The runner writes:
 
 - `run_config.json`
-- `feature_config.json`
+- `native_time_feature_config.json`
 - `environment_info.json`
 - `results/dynamic_fpde_sample_metrics.csv`
 - `results/dynamic_fpde_summary_by_method.csv`
@@ -129,89 +172,50 @@ The runner writes:
 - `tables/table_dynamic_fpde_margin_summary.tex`
 - `tables/table_dynamic_fpde_additivity.tex`
 - `tables/table_dynamic_fpde_lambda.tex`
+- `tables/table_dynamic_fpde_native_time_checks.tex`
 
-When `--make-figures` is passed, optional figure files are written under
-`figures/`.
+Sample rows include Native-Time-specific checks and metadata:
+`T`, `F`, `phi_shape`, `x_shape`, `shape_preserved`,
+`target_prototype_source_sample_id`,
+`target_prototype_source_frame_index`,
+`target_prototype_source_time_sec`, `target_prototype_label`,
+`rival_prototype_source_sample_id`,
+`rival_prototype_source_frame_index`,
+`rival_prototype_source_time_sec`, `rival_prototype_label`,
+`prototype_mode`, `prototype_selection_rule`, `normalize`, `anchor`, and
+`evidence_role`.
 
-## Metrics
+Before rows are written, the runner checks that `Phi.shape == X.shape`,
+prototypes have shape `(F,)`, and `X`, prototypes, `Phi`, and evidence are
+finite. Native-Time result rows do not contain a resampled length field.
 
-The method operates on frame-level acoustic features, not raw waveform samples.
-The feature extractor returns a matrix `X` with shape `(T, F)` containing RMS,
-zero crossing rate, spectral features, and MFCCs. Features are standardized
-with training-set mean and standard deviation before Dynamic-FPDE prototypes are
-built.
+## Diagnostics
 
-For each explained sample, the runner records prototype evidence, the
-auditable attribution sum residual, deletion AUC, insertion AUC, and a combined
-score. The deletion/insertion metrics are prototype-driven and normalized. They
-are computed from prototype-evidence curves rather than class probabilities.
+Deletion/insertion curves are normalized prototype-evidence removal/recovery
+diagnostics over native frame indices. They rank frames by signed, absolute, or
+positive frame evidence depending on the configured diagnostic mode. The
+default runner path uses signed evidence. The curves are not causal
+faithfulness and do not imply black-box model faithfulness.
 
-All methods for a sample are evaluated with the same target/rival prototype
-pair. The runner first computes a Dynamic-Diff explanation with
-`rival_label=None`, records its `rival_label` as the common rival, then passes
-that common rival label to `dynamic_diff`, `dynamic_cos`, `dynamic_hyb`,
-`energy_baseline`, and `random_baseline` evaluations.
+Total evidence can depend on the number of frames. Do not directly compare
+total evidence across clips with different lengths without normalization or
+careful interpretation.
 
-The runner records method-specific prototype-margin diagnostics:
-
-- `prototype_margin`, equal to the Dynamic-FPDE prototype evidence value
-- `prototype_margin_positive`, indicating whether the margin is positive
-- `prototype_margin_sign`, one of `positive`, `zero`, or `negative`
-
-It also records a method-independent selection margin:
-
-- `selection_margin`, the common Dynamic-Diff target-vs-rival prototype margin
-- `selection_margin_positive`, indicating whether the selection margin is positive
-- `selection_margin_sign`, one of `positive`, `zero`, or `negative`
-- `selection_margin_source`, currently `dynamic_diff`
-- `common_rival_label`, the Dynamic-Diff-selected rival label shared by all methods
-
-`dynamic_fpde_summary_positive_margin_by_method.csv` filters samples with
-`selection_margin > 0`, not method-specific `prototype_margin > 0`. This keeps
-Dynamic-Diff, Dynamic-Cos, Dynamic-Hyb, energy baseline, and random baseline
-summaries on the same comparable sample set.
-
-Energy and random baselines provide frame rankings only. They do not have their
-own attribution evidence. Their `evidence` and `prototype_margin` fields are
-retained for CSV compatibility and represent evaluation margins from the
-common prototype-evidence evaluator, not baseline explanation margins. The
-explicit `evaluation_evidence`, `evaluation_margin`, and `evidence_role`
-columns make this distinction machine-readable.
-
-Because Dynamic-FPDE evidence is additive, deletion and insertion curves may be
-symmetric or identical after normalization. They are useful as temporal
-evidence-removal/recovery diagnostics, but they are not fully independent
-metrics and should not be interpreted as causal faithfulness scores.
-
-`dynamic_hyb` selects `lambda_hyb` on a deterministic validation split inside
-the ESC-50 training folds. The suite also reports `dynamic_diff`,
-`dynamic_cos`, an RMS energy ranking baseline, and a seeded random ranking
-baseline.
-
-In pilot and full modes, `dynamic_fpde_sample_metrics.csv` keeps every
-`random_baseline` repetition with `aggregation_unit=sample_repetition`.
-Method-level summaries and LaTeX tables first average random repetitions to
-one `aggregation_unit=sample` row per sample. Summary CSVs report `n` and
-`n_unique_samples` as the effective sample-level count, `n_rows` as the number
-of underlying rows represented, and `random_repetitions_mean` for random
-baseline transparency.
-
-## LaTeX Tables
+## Tables
 
 ```bash
 python scripts/make_dynamic_fpde_tables.py \
-  --results-dir outputs/dynamic_fpde_esc50_smoke/results \
-  --tables-dir outputs/dynamic_fpde_esc50_smoke/tables
+  --results-dir outputs/native_time_dynamic_fpde_esc50_smoke/results \
+  --tables-dir outputs/native_time_dynamic_fpde_esc50_smoke/tables
 ```
 
-The table script reads existing CSV summaries. It does not hardcode or invent
-research values.
+Generated tables use Native-Time terminology:
 
-## Interpretation Limits
+- Native-Time Dynamic-Diff
+- Native-Time Dynamic-Cos
+- Native-Time Dynamic-Hyb
+- Energy baseline
+- Random baseline
 
-Dynamic-FPDE explains prototype evidence for a target prototype over a rival
-prototype. The outputs are not causal explanations, ground-truth explanations,
-human preference explanations, or black-box model faithfulness measurements.
-This experiment suite intentionally does not implement Delta-Dynamic-FPDE,
-original-cover difference explanations, raw waveform direct attribution, DTW
-alignment, AIME, SHAP, LIME, recommender-system logic, or causal claims.
+`table_dynamic_fpde_native_time_checks.tex` reports shape preservation,
+prototype metadata availability, and additivity residuals.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -16,11 +17,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_project_installs_fpde_from_dynamic_branch():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["name"] == "dynamic-fpde-reproducibility-artifact"
+    assert (
+        pyproject["project"]["description"]
+        == "Reproducible Dynamic-FPDE experiments for time-resolved prototype-directional audio explanations."
+    )
     deps = pyproject["project"]["dependencies"]
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in deps
     assert "librosa" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in (ROOT / "requirements.txt").read_text(encoding="utf-8")
     assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in (ROOT / "environment.yml").read_text(encoding="utf-8")
+
+
+def test_gitignore_excludes_dynamic_audio_feature_cache_paths():
+    result = subprocess.run(
+        ["git", "check-ignore", "outputs/demo/cache/features/example.npz", "outputs/demo/cache/features/"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    ignored = set(result.stdout.splitlines())
+    assert "outputs/demo/cache/features/example.npz" in ignored
+    assert "outputs/demo/cache/features/" in ignored
 
 
 def test_missing_esc50_dataset_reports_expected_structure(tmp_path: Path):
@@ -91,13 +112,17 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
     assert exit_code == 0
     sample_metrics = output_dir / "results" / "dynamic_fpde_sample_metrics.csv"
     summary = output_dir / "results" / "dynamic_fpde_summary_by_method.csv"
+    positive_summary = output_dir / "results" / "dynamic_fpde_summary_positive_margin_by_method.csv"
     lambdas = output_dir / "results" / "dynamic_fpde_lambda_selection.csv"
     additivity = output_dir / "results" / "dynamic_fpde_additivity_summary.csv"
     assert sample_metrics.exists()
     assert summary.exists()
+    assert positive_summary.exists()
     assert lambdas.exists()
     assert additivity.exists()
     assert (output_dir / "tables" / "table_dynamic_fpde_main_results.tex").exists()
+    assert (output_dir / "tables" / "table_dynamic_fpde_positive_margin_results.tex").exists()
+    assert (output_dir / "tables" / "table_dynamic_fpde_margin_summary.tex").exists()
     figures = output_dir / "figures"
     assert list(figures.glob("example_time_importance_*.png"))
     assert list(figures.glob("example_attribution_heatmap_*.png"))
@@ -107,6 +132,9 @@ def test_smoke_cli_runs_on_synthetic_esc50_layout(tmp_path: Path):
 
     with sample_metrics.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
+    assert {"prototype_margin", "prototype_margin_positive", "prototype_margin_sign"}.issubset(rows[0])
+    assert {row["prototype_margin_sign"] for row in rows}.issubset({"positive", "zero", "negative"})
+    assert all(row["prototype_margin"] == row["evidence"] for row in rows)
     assert {row["method"] for row in rows} == {
         "dynamic_diff",
         "dynamic_cos",

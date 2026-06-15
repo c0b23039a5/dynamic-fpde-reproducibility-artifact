@@ -26,6 +26,12 @@ data/ESC-50/
 The runner reads `meta/esc50.csv`, uses the provided `fold` column, and uses
 `category` as the class label. It does not download ESC-50 automatically.
 
+ESC-50 is distributed under Creative Commons Attribution-NonCommercial terms.
+This artifact does not redistribute the raw dataset. Users must obtain ESC-50
+separately and follow its license. If feature caches are redistributed, they
+should be treated as dataset-derived artifacts and handled according to the
+dataset license.
+
 ## Install
 
 ```bash
@@ -62,6 +68,19 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
   --prototype-length 128
 ```
 
+## Run Full 5-Fold Mode
+
+```bash
+python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
+  --dataset-root data/ESC-50 \
+  --output-dir outputs/dynamic_fpde_esc50_full \
+  --mode full \
+  --folds 1,2,3,4,5 \
+  --seed 0 \
+  --prototype-length 128 \
+  --make-figures
+```
+
 ## Outputs
 
 The runner writes:
@@ -71,9 +90,12 @@ The runner writes:
 - `environment_info.json`
 - `results/dynamic_fpde_sample_metrics.csv`
 - `results/dynamic_fpde_summary_by_method.csv`
+- `results/dynamic_fpde_summary_positive_margin_by_method.csv`
 - `results/dynamic_fpde_lambda_selection.csv`
 - `results/dynamic_fpde_additivity_summary.csv`
 - `tables/table_dynamic_fpde_main_results.tex`
+- `tables/table_dynamic_fpde_positive_margin_results.tex`
+- `tables/table_dynamic_fpde_margin_summary.tex`
 - `tables/table_dynamic_fpde_additivity.tex`
 - `tables/table_dynamic_fpde_lambda.tex`
 
@@ -92,6 +114,17 @@ For each explained sample, the runner records prototype evidence, the
 auditable attribution sum residual, deletion AUC, insertion AUC, and a combined
 score. The deletion/insertion metrics are prototype-driven and normalized. They
 are computed from prototype-evidence curves rather than class probabilities.
+
+The runner also records prototype-margin diagnostics:
+
+- `prototype_margin`, equal to the Dynamic-FPDE prototype evidence value
+- `prototype_margin_positive`, indicating whether the margin is positive
+- `prototype_margin_sign`, one of `positive`, `zero`, or `negative`
+
+Because Dynamic-FPDE evidence is additive, deletion and insertion curves may be
+symmetric or identical after normalization. They are useful as temporal
+evidence-removal/recovery diagnostics, but they are not fully independent
+metrics and should not be interpreted as causal faithfulness scores.
 
 `dynamic_hyb` selects `lambda_hyb` on a deterministic validation split inside
 the ESC-50 training folds. The suite also reports `dynamic_diff`,

@@ -45,6 +45,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
     results = Path(results_dir)
     tables = Path(tables_dir)
     summary = _read_required_csv(results / "dynamic_fpde_summary_by_method.csv")
+    positive_summary = _read_required_csv(results / "dynamic_fpde_summary_positive_margin_by_method.csv")
     additivity = _read_required_csv(results / "dynamic_fpde_additivity_summary.csv")
     lambdas = _read_required_csv(results / "dynamic_fpde_lambda_selection.csv")
     written: list[Path] = []
@@ -69,6 +70,49 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
         "tab:dynamic-fpde-main-results",
     )
     written.append(main_path)
+
+    positive_path = tables / "table_dynamic_fpde_positive_margin_results.tex"
+    _write_table(
+        positive_path,
+        ["Dataset", "Fold", "Method", "Combined", "Deletion", "Insertion", "N"],
+        [
+            [
+                row.get("dataset"),
+                row.get("fold"),
+                row.get("method"),
+                row.get("combined_score_mean"),
+                row.get("deletion_drop_auc_mean"),
+                row.get("insertion_gain_auc_mean"),
+                row.get("n"),
+            ]
+            for row in positive_summary
+        ],
+        "Dynamic-FPDE results for samples with positive prototype evidence margin.",
+        "tab:dynamic-fpde-positive-margin-results",
+    )
+    written.append(positive_path)
+
+    margin_path = tables / "table_dynamic_fpde_margin_summary.tex"
+    _write_table(
+        margin_path,
+        ["Dataset", "Fold", "Method", "Margin Mean", "Margin Median", "Positive Rate", "N+", "N-"],
+        [
+            [
+                row.get("dataset"),
+                row.get("fold"),
+                row.get("method"),
+                row.get("prototype_margin_mean"),
+                row.get("prototype_margin_median"),
+                row.get("prototype_margin_positive_rate"),
+                row.get("n_positive_margin"),
+                row.get("n_negative_margin"),
+            ]
+            for row in summary
+        ],
+        "Prototype evidence margin summary by Dynamic-FPDE method or baseline.",
+        "tab:dynamic-fpde-margin-summary",
+    )
+    written.append(margin_path)
 
     additivity_path = tables / "table_dynamic_fpde_additivity.tex"
     _write_table(
@@ -110,4 +154,3 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
     )
     written.append(lambda_path)
     return written
-

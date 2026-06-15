@@ -22,7 +22,7 @@ from fpde import (
     temporal_deletion_insertion_curves,
 )
 
-from experiments.dynamic_fpde_audio.aggregate import aggregate_additivity, aggregate_by_method, write_csv
+from experiments.dynamic_fpde_audio.aggregate import aggregate_additivity, aggregate_by_method, positive_margin_rows, write_csv
 from experiments.dynamic_fpde_audio.baselines import energy_frame_scores, random_frame_scores
 from experiments.dynamic_fpde_audio.datasets import (
     ESCSample,
@@ -47,6 +47,9 @@ SAMPLE_FIELDS = [
     "method",
     "lambda_hyb",
     "evidence",
+    "prototype_margin",
+    "prototype_margin_positive",
+    "prototype_margin_sign",
     "exactness_residual",
     "abs_exactness_residual",
     "deletion_drop_auc",
@@ -147,6 +150,13 @@ def _row_from_result(
     random_repetition: int | str = "",
 ) -> dict[str, object]:
     residual = "" if not np.isfinite(explanation.exactness_residual) else float(explanation.exactness_residual)
+    prototype_margin = float(explanation.evidence)
+    if prototype_margin > 0.0:
+        margin_sign = "positive"
+    elif prototype_margin < 0.0:
+        margin_sign = "negative"
+    else:
+        margin_sign = "zero"
     return {
         "dataset": "esc50",
         "fold": int(fold),
@@ -158,6 +168,9 @@ def _row_from_result(
         "method": method,
         "lambda_hyb": lambda_hyb,
         "evidence": float(explanation.evidence),
+        "prototype_margin": prototype_margin,
+        "prototype_margin_positive": bool(prototype_margin > 0.0),
+        "prototype_margin_sign": margin_sign,
         "exactness_residual": residual,
         "abs_exactness_residual": "" if residual == "" else abs(float(residual)),
         "deletion_drop_auc": float(curves["deletion_drop_auc"]),
@@ -520,6 +533,10 @@ def main(argv: list[str] | None = None) -> int:
     results_dir = output_dir / "results"
     write_csv(results_dir / "dynamic_fpde_sample_metrics.csv", all_sample_rows, SAMPLE_FIELDS)
     write_csv(results_dir / "dynamic_fpde_summary_by_method.csv", aggregate_by_method(all_sample_rows))
+    write_csv(
+        results_dir / "dynamic_fpde_summary_positive_margin_by_method.csv",
+        aggregate_by_method(positive_margin_rows(all_sample_rows)),
+    )
     write_csv(results_dir / "dynamic_fpde_lambda_selection.csv", all_lambda_rows)
     write_csv(results_dir / "dynamic_fpde_additivity_summary.csv", aggregate_additivity(all_sample_rows))
     if all_errors:
@@ -533,4 +550,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

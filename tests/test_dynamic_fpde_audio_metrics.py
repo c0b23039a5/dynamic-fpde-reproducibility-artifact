@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.dynamic_fpde_audio.aggregate import aggregate_additivity, aggregate_by_method, write_csv
+from experiments.dynamic_fpde_audio.aggregate import aggregate_additivity, aggregate_by_method, positive_margin_rows, write_csv
 from experiments.dynamic_fpde_audio.tables import generate_tables
 
 
@@ -15,6 +15,7 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
             "fold": 1,
             "method": "dynamic_hyb",
             "evidence": 1.0,
+            "prototype_margin": 1.0,
             "abs_exactness_residual": 0.01,
             "deletion_drop_auc": 0.4,
             "insertion_gain_auc": 0.6,
@@ -26,6 +27,7 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
             "fold": 1,
             "method": "dynamic_hyb",
             "evidence": 3.0,
+            "prototype_margin": -3.0,
             "abs_exactness_residual": 0.03,
             "deletion_drop_auc": 0.6,
             "insertion_gain_auc": 0.8,
@@ -37,6 +39,7 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
             "fold": 1,
             "method": "energy_baseline",
             "evidence": 2.0,
+            "prototype_margin": 2.0,
             "abs_exactness_residual": "",
             "deletion_drop_auc": 0.2,
             "insertion_gain_auc": 0.4,
@@ -53,9 +56,30 @@ def test_metrics_aggregation_groups_by_dataset_fold_and_method():
     assert hyb["combined_score_mean"] == pytest.approx(0.6)
     assert hyb["combined_score_median"] == pytest.approx(0.6)
     assert hyb["n"] == 2
+    assert hyb["prototype_margin_mean"] == pytest.approx(-1.0)
+    assert hyb["prototype_margin_median"] == pytest.approx(-1.0)
+    assert hyb["prototype_margin_positive_rate"] == pytest.approx(0.5)
+    assert hyb["n_positive_margin"] == 1
+    assert hyb["n_negative_margin"] == 1
     assert energy["abs_exactness_residual_n"] == 0
     assert additivity[0]["abs_exactness_residual_mean"] == pytest.approx(0.02)
     assert additivity[0]["abs_exactness_residual_std"] == pytest.approx(0.01)
+
+
+def test_positive_margin_summary_filters_rows():
+    rows = [
+        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": 1.0, "combined_score": 0.7},
+        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": 0.0, "combined_score": 0.5},
+        {"dataset": "esc50", "fold": 1, "method": "dynamic_hyb", "prototype_margin": -1.0, "combined_score": 0.3},
+    ]
+
+    positive_rows = positive_margin_rows(rows)
+    summary = aggregate_by_method(positive_rows)
+
+    assert len(positive_rows) == 1
+    assert positive_rows[0]["combined_score"] == pytest.approx(0.7)
+    assert summary[0]["n"] == 1
+    assert summary[0]["prototype_margin_positive_rate"] == pytest.approx(1.0)
 
 
 def test_latex_table_generation_reads_csv_values(tmp_path: Path):
@@ -68,6 +92,30 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
                 "dataset": "esc50",
                 "fold": 1,
                 "method": "dynamic_hyb",
+                "prototype_margin_mean": 0.25,
+                "prototype_margin_median": 0.25,
+                "prototype_margin_positive_rate": 1.0,
+                "n_positive_margin": 2,
+                "n_negative_margin": 0,
+                "combined_score_mean": 0.75,
+                "deletion_drop_auc_mean": 0.7,
+                "insertion_gain_auc_mean": 0.8,
+                "n": 2,
+            }
+        ],
+    )
+    write_csv(
+        results / "dynamic_fpde_summary_positive_margin_by_method.csv",
+        [
+            {
+                "dataset": "esc50",
+                "fold": 1,
+                "method": "dynamic_hyb",
+                "prototype_margin_mean": 0.25,
+                "prototype_margin_median": 0.25,
+                "prototype_margin_positive_rate": 1.0,
+                "n_positive_margin": 2,
+                "n_negative_margin": 0,
                 "combined_score_mean": 0.75,
                 "deletion_drop_auc_mean": 0.7,
                 "insertion_gain_auc_mean": 0.8,
@@ -98,6 +146,8 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
 
     assert {path.name for path in written} == {
         "table_dynamic_fpde_main_results.tex",
+        "table_dynamic_fpde_positive_margin_results.tex",
+        "table_dynamic_fpde_margin_summary.tex",
         "table_dynamic_fpde_additivity.tex",
         "table_dynamic_fpde_lambda.tex",
     }
@@ -105,9 +155,11 @@ def test_latex_table_generation_reads_csv_values(tmp_path: Path):
     assert "\\toprule" in main_text
     assert "dynamic\\_hyb" in main_text
     assert "0.7500" in main_text
+    margin_text = (tables / "table_dynamic_fpde_margin_summary.tex").read_text(encoding="utf-8")
+    assert "Positive Rate" in margin_text
+    assert "1.0000" in margin_text
 
 
 def test_table_generation_fails_clearly_when_csv_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError, match="required CSV"):
         generate_tables(tmp_path / "missing-results", tmp_path / "tables")
-

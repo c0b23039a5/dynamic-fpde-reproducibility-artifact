@@ -11,6 +11,7 @@ from typing import Iterable
 
 SUMMARY_METRICS = (
     "evidence",
+    "prototype_margin",
     "abs_exactness_residual",
     "deletion_drop_auc",
     "insertion_gain_auc",
@@ -50,8 +51,22 @@ def aggregate_by_method(rows: Iterable[dict[str, object]]) -> list[dict[str, obj
             summary[f"{metric}_std"] = stats["std"]
             summary[f"{metric}_median"] = stats["median"]
             summary[f"{metric}_n"] = stats["n"]
+        margins = [value for row in group_rows if (value := _to_float(row.get("prototype_margin"))) is not None]
+        positive = [value for value in margins if value > 0.0]
+        negative = [value for value in margins if value < 0.0]
+        summary["prototype_margin_mean"] = _stats(margins)["mean"]
+        summary["prototype_margin_median"] = _stats(margins)["median"]
+        summary["prototype_margin_positive_rate"] = (len(positive) / len(margins)) if margins else ""
+        summary["n_positive_margin"] = len(positive)
+        summary["n_negative_margin"] = len(negative)
         out.append(summary)
     return out
+
+
+def positive_margin_rows(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    """Return rows with positive prototype evidence margin."""
+
+    return [row for row in rows if (value := _to_float(row.get("prototype_margin"))) is not None and value > 0.0]
 
 
 def aggregate_additivity(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
@@ -98,4 +113,3 @@ def write_csv(path: str | Path, rows: list[dict[str, object]], fieldnames: list[
 def read_csv_rows(path: str | Path) -> list[dict[str, str]]:
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
-

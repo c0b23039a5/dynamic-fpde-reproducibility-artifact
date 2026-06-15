@@ -17,6 +17,7 @@ ENV/
 # Local OpenML/cache files
 .openml/
 openml_cache/
+data/
 
 # Recomputed experiment outputs; precomputed outputs are intentionally tracked
 results_recomputed/
@@ -42,3 +43,5 @@ Thumbs.db
 
 ESC-50/
 uv.lock
+outputs/**/cache/features/
+outputs/**/cache/features/*.npz

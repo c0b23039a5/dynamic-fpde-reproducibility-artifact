@@ -82,7 +82,12 @@ RAW_SAMPLE_FIELDS = [
     "top_negative_evidence",
     "runtime_sec",
     "context_runtime_sec",
+    "fold_context_runtime_sec",
+    "context_runtime_amortized_sec",
+    "sample_audio_load_runtime_sec",
+    "fold_audio_load_runtime_sec",
     "audio_load_runtime_sec",
+    "sample_resample_runtime_sec",
     "resample_runtime_sec",
     "windowing_runtime_sec",
     "bank_build_runtime_sec",
@@ -96,6 +101,11 @@ RAW_SAMPLE_FIELDS = [
     "plot_runtime_sec",
     "explain_runtime_sec",
     "save_runtime_sec",
+    "sample_explain_runtime_sec",
+    "sample_save_runtime_sec",
+    "sample_total_runtime_sec",
+    "timings_overlap",
+    "n_test_samples",
     "device",
     "segment_length",
     "hop_length",
@@ -130,6 +140,7 @@ RAW_METHOD_FIELDS = [
     "n_valid_samples",
     "coverage_rate",
     "runtime_sec",
+    "sample_total_runtime_sec",
     "device",
     "segment_length",
     "hop_length",
@@ -279,6 +290,14 @@ def _read_csv_if_exists(path: Path) -> list[dict[str, object]]:
         return [dict(row) for row in csv.DictReader(handle)]
 
 
+def _dedupe_rows(rows: Iterable[dict[str, object]], key_fields: Sequence[str]) -> list[dict[str, object]]:
+    keyed: dict[tuple[str, ...], dict[str, object]] = {}
+    for row in rows:
+        key = tuple(str(row.get(field, "")) for field in key_fields)
+        keyed[key] = dict(row)
+    return list(keyed.values())
+
+
 def _read_completed(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -394,6 +413,7 @@ def _row_from_lambda_result(
     save_runtime_sec: float,
     audio_load_runtime_sec: float,
     sample_resample_runtime_sec: float,
+    n_test_samples: int,
     prototype_selection: str,
     medoid_block_size: int,
     max_prototype_candidates: int | None,
@@ -413,7 +433,8 @@ def _row_from_lambda_result(
     )
     raw_diff = _detail_vector(details, "diff_evidence")
     raw_cos = _detail_vector(details, "cos_evidence")
-    runtime_sec = context_runtime_sec + explain_runtime_sec + save_runtime_sec
+    sample_total_runtime_sec = float(audio_load_runtime_sec) + float(sample_resample_runtime_sec) + float(explain_runtime_sec) + float(save_runtime_sec)
+    context_runtime_amortized_sec = float(context_runtime_sec) / int(n_test_samples) if int(n_test_samples) > 0 else ""
     return {
         "dataset": "esc50",
         "fold": fold,
@@ -446,10 +467,15 @@ def _row_from_lambda_result(
         "top_negative_start_sample": top_negative["start_sample"],
         "top_negative_end_sample": top_negative["end_sample"],
         "top_negative_evidence": top_negative["evidence"],
-        "runtime_sec": runtime_sec,
+        "runtime_sec": sample_total_runtime_sec,
         "context_runtime_sec": context_runtime_sec,
-        "audio_load_runtime_sec": float(audio_load_runtime_sec) + float(context_timings.get("audio_load_runtime_sec", 0.0)),
-        "resample_runtime_sec": float(context_timings.get("resample_runtime_sec", 0.0)) + float(sample_resample_runtime_sec),
+        "fold_context_runtime_sec": context_runtime_sec,
+        "context_runtime_amortized_sec": context_runtime_amortized_sec,
+        "sample_audio_load_runtime_sec": float(audio_load_runtime_sec),
+        "fold_audio_load_runtime_sec": float(context_timings.get("audio_load_runtime_sec", 0.0)),
+        "audio_load_runtime_sec": float(audio_load_runtime_sec),
+        "sample_resample_runtime_sec": float(sample_resample_runtime_sec),
+        "resample_runtime_sec": float(sample_resample_runtime_sec),
         "windowing_runtime_sec": context_timings.get("windowing_runtime_sec", ""),
         "bank_build_runtime_sec": context_timings.get("bank_build_runtime_sec", ""),
         "medoid_runtime_sec": context_timings.get("medoid_runtime_sec", ""),
@@ -462,6 +488,11 @@ def _row_from_lambda_result(
         "plot_runtime_sec": details.get("plot_runtime_sec", ""),
         "explain_runtime_sec": explain_runtime_sec,
         "save_runtime_sec": save_runtime_sec,
+        "sample_explain_runtime_sec": explain_runtime_sec,
+        "sample_save_runtime_sec": save_runtime_sec,
+        "sample_total_runtime_sec": sample_total_runtime_sec,
+        "timings_overlap": False,
+        "n_test_samples": int(n_test_samples),
         "device": details.get("device", explanation.details.get("device", "")),
         "segment_length": explanation.details.get("segment_length", ""),
         "hop_length": explanation.details.get("hop_length", ""),
@@ -484,6 +515,7 @@ def _method_rows_from_lambda_result(
     lambda_hyb: float,
     result: dict[str, Any],
     runtime_sec: float,
+    include_unscaled_components: bool,
 ) -> list[dict[str, object]]:
     details = dict(result.get("details", {}))
     rows: list[dict[str, object]] = []
@@ -496,6 +528,7 @@ def _method_rows_from_lambda_result(
         "target_label": explanation.target_label,
         "rival_label": explanation.rival_label,
         "runtime_sec": float(runtime_sec),
+        "sample_total_runtime_sec": float(runtime_sec),
         "device": details.get("device", explanation.details.get("device", "")),
         "segment_length": explanation.details.get("segment_length", ""),
         "hop_length": explanation.details.get("hop_length", ""),
@@ -503,11 +536,16 @@ def _method_rows_from_lambda_result(
     effective_masks = np.asarray(result.get("effective_window_masks", []), dtype=bool)
     window_starts = np.asarray(result.get("window_starts", []), dtype=np.intp)
     input_length = int(explanation.waveform.shape[0])
-    for method, lambda_value, evidence_values in (
-        ("raw_diff_unscaled", "", _detail_vector(details, "diff_evidence")),
-        ("raw_cos_unscaled", "", _detail_vector(details, "cos_evidence")),
-        (f"raw_hyb_l1_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), np.asarray(result["window_evidence"], dtype=float)),
-    ):
+    method_specs: list[tuple[str, float | str, np.ndarray]] = []
+    if include_unscaled_components:
+        method_specs.extend(
+            [
+                ("raw_diff_unscaled", "", _detail_vector(details, "diff_evidence")),
+                ("raw_cos_unscaled", "", _detail_vector(details, "cos_evidence")),
+            ]
+        )
+    method_specs.append((f"raw_hyb_l1_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), np.asarray(result["window_evidence"], dtype=float)))
+    for method, lambda_value, evidence_values in method_specs:
         metrics = _window_evidence_metrics(evidence_values, effective_masks, input_length, window_starts)
         rows.append({**base, "method": method, "lambda_hyb": lambda_value, **metrics})
     return rows
@@ -527,34 +565,64 @@ def _stats(values: list[float]) -> dict[str, object]:
     }
 
 
+def _float_values(rows: Iterable[dict[str, object]], key: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        value = row.get(key, "")
+        if value in ("", None):
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(parsed):
+            values.append(parsed)
+    return values
+
+
 def summarize_by_lambda(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     groups: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         groups[(str(row["fold"]), str(row["lambda_hyb"]))].append(row)
     out: list[dict[str, object]] = []
     for (fold, lambda_hyb), group_rows in sorted(groups.items(), key=lambda item: (int(item[0][0]), float(item[0][1]))):
-        evidence = [float(row["evidence"]) for row in group_rows]
-        runtime = [float(row["runtime_sec"]) for row in group_rows]
+        evidence = _float_values(group_rows, "evidence")
+        runtime = _float_values(group_rows, "runtime_sec")
         evidence_stats = _stats(evidence)
         runtime_stats = _stats(runtime)
         shape_matches = [str(row["shape_match"]) == "True" or row["shape_match"] is True for row in group_rows]
-        out.append(
-            {
-                "dataset": "esc50",
-                "fold": fold,
-                "lambda_hyb": float(lambda_hyb),
-                "n": len(group_rows),
-                "evidence_mean": evidence_stats["mean"],
-                "evidence_std": evidence_stats["std"],
-                "evidence_min": evidence_stats["min"],
-                "evidence_max": evidence_stats["max"],
-                "runtime_sec_mean": runtime_stats["mean"],
-                "runtime_sec_std": runtime_stats["std"],
-                "shape_match_rate": sum(1 for value in shape_matches if value) / len(shape_matches),
-                "target_generation_ok": sum(1 for row in group_rows if row.get("target_generation_status") == "ok"),
-                "rival_generation_ok": sum(1 for row in group_rows if row.get("rival_generation_status") == "ok"),
-            }
-        )
+        summary = {
+            "dataset": "esc50",
+            "fold": fold,
+            "lambda_hyb": float(lambda_hyb),
+            "n": len(group_rows),
+            "n_unique_samples": len({str(row.get("sample_id", "")) for row in group_rows}),
+            "evidence_mean": evidence_stats["mean"],
+            "evidence_std": evidence_stats["std"],
+            "evidence_min": evidence_stats["min"],
+            "evidence_max": evidence_stats["max"],
+            "runtime_sec_mean": runtime_stats["mean"],
+            "runtime_sec_std": runtime_stats["std"],
+            "shape_match_rate": sum(1 for value in shape_matches if value) / len(shape_matches),
+            "target_generation_ok": sum(1 for row in group_rows if row.get("target_generation_status") == "ok"),
+            "rival_generation_ok": sum(1 for row in group_rows if row.get("rival_generation_status") == "ok"),
+        }
+        for metric in (
+            "evidence_per_window",
+            "evidence_per_valid_sample",
+            "absolute_evidence",
+            "positive_evidence",
+            "negative_evidence",
+            "positive_window_rate",
+            "negative_window_rate",
+            "coverage_rate",
+            "sample_total_runtime_sec",
+            "context_runtime_amortized_sec",
+        ):
+            stats = _stats(_float_values(group_rows, metric))
+            summary[f"{metric}_mean"] = stats["mean"]
+            summary[f"{metric}_std"] = stats["std"]
+        out.append(summary)
     return out
 
 
@@ -597,7 +665,7 @@ def run_fold(
 
     max_candidates = _none_if_nonpositive(max_prototype_candidates)
     cache_path: Path | None = None
-    if context_cache_dir is not None:
+    if context_cache_dir is not None and not retain_segment_banks:
         cache_key = _raw_context_cache_key(
             train_samples,
             fold=fold,
@@ -613,19 +681,26 @@ def run_fold(
         cache_path = context_cache_dir / f"esc50_fold{fold}_seed{seed}_sr{target_sr}_seg{segment_sec:g}_hop{hop_sec:g}_{cache_key}.npz"
 
     context_cache_hit = False
+    cached_context: Any | None = None
     if cache_path is not None and cache_path.exists() and not overwrite:
         context_start = perf_counter()
-        context = load_raw_context_cache(cache_path, fpde)
-        context_timings = {
-            "audio_load_runtime_sec": train_audio_runtime,
-            "context_runtime_sec": perf_counter() - context_start,
-            "resample_runtime_sec": 0.0,
-            "windowing_runtime_sec": 0.0,
-            "bank_build_runtime_sec": 0.0,
-            "medoid_runtime_sec": 0.0,
-        }
-        context_cache_hit = True
-    else:
+        try:
+            cached_context = load_raw_context_cache(cache_path, fpde)
+        except Exception:
+            cache_path.unlink(missing_ok=True)
+            cached_context = None
+        if cached_context is not None:
+            context = cached_context
+            context_timings = {
+                "audio_load_runtime_sec": train_audio_runtime,
+                "context_runtime_sec": perf_counter() - context_start,
+                "resample_runtime_sec": 0.0,
+                "windowing_runtime_sec": 0.0,
+                "bank_build_runtime_sec": 0.0,
+                "medoid_runtime_sec": 0.0,
+            }
+            context_cache_hit = True
+    if cached_context is None:
         build_result = prepare_fast_raw_waveform_fpde_context(
             fpde,
             train_waveforms,
@@ -655,12 +730,21 @@ def run_fold(
     fold_sample_metrics_path = fold_results_dir / "raw_waveform_sample_metrics.csv"
     fold_method_metrics_path = fold_results_dir / "raw_waveform_method_metrics.csv"
     completed = _read_completed(completed_path) if resume and not overwrite else set()
-    rows: list[dict[str, object]] = _read_csv_if_exists(fold_sample_metrics_path) if resume and not overwrite else []
-    method_rows: list[dict[str, object]] = _read_csv_if_exists(fold_method_metrics_path) if resume and not overwrite else []
+    rows: list[dict[str, object]] = (
+        _dedupe_rows(_read_csv_if_exists(fold_sample_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb"))
+        if resume and not overwrite
+        else []
+    )
+    method_rows: list[dict[str, object]] = (
+        _dedupe_rows(_read_csv_if_exists(fold_method_metrics_path), ("fold", "seed", "sample_id", "method"))
+        if resume and not overwrite
+        else []
+    )
     errors = list(train_errors)
     lambdas = None if lambda_grid is None else tuple(lambda_grid)
+    n_test_samples = len(test_samples)
     for sample in test_samples:
-        if skip_completed_samples and sample.sample_id in completed:
+        if (resume or skip_completed_samples) and sample.sample_id in completed:
             continue
         try:
             audio_start = perf_counter()
@@ -698,7 +782,7 @@ def run_fold(
             errors.append({"sample_id": sample.sample_id, "filename": sample.filename, "error": str(exc)})
             continue
 
-        for lambda_hyb, result in sorted(explanation.lambda_results.items(), key=lambda item: item[0]):
+        for lambda_index, (lambda_hyb, result) in enumerate(sorted(explanation.lambda_results.items(), key=lambda item: item[0])):
             rows.append(
                 _row_from_lambda_result(
                     sample=sample,
@@ -713,6 +797,7 @@ def run_fold(
                     save_runtime_sec=save_runtime_sec,
                     audio_load_runtime_sec=sample_audio_runtime,
                     sample_resample_runtime_sec=sample_resample_runtime,
+                    n_test_samples=n_test_samples,
                     prototype_selection=prototype_selection,
                     medoid_block_size=medoid_block_size,
                     max_prototype_candidates=max_candidates,
@@ -728,9 +813,12 @@ def run_fold(
                     explanation=explanation,
                     lambda_hyb=float(lambda_hyb),
                     result=result,
-                    runtime_sec=context_runtime_sec + explain_runtime_sec + save_runtime_sec,
+                    runtime_sec=sample_audio_runtime + sample_resample_runtime + explain_runtime_sec + save_runtime_sec,
+                    include_unscaled_components=lambda_index == 0,
                 )
             )
+        rows = _dedupe_rows(rows, ("fold", "seed", "sample_id", "lambda_hyb"))
+        method_rows = _dedupe_rows(method_rows, ("fold", "seed", "sample_id", "method"))
         completed.add(sample.sample_id)
         if fold_output_dir is not None or resume or skip_completed_samples:
             _atomic_write_csv(fold_sample_metrics_path, rows, RAW_SAMPLE_FIELDS)
@@ -817,6 +905,8 @@ def main(argv: list[str] | None = None) -> int:
         "max_prototype_candidates": max_prototype_candidates,
         "retain_segment_banks": args.retain_segment_banks,
         "context_cache_dir": str(context_cache_dir),
+        "context_cache_enabled": not args.retain_segment_banks,
+        "context_cache_disabled_reason": "retain_segment_banks requires full banks that compact cache does not store" if args.retain_segment_banks else "",
         "resume": args.resume,
         "overwrite": args.overwrite,
         "fold_output_dir": str(args.fold_output_dir) if args.fold_output_dir is not None else "",

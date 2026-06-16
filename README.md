@@ -65,7 +65,6 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --seed 0 \
   --prototype-selection exact_medoid \
   --medoid-block-size 128 \
-  --max-prototype-candidates 1500 \
   --context-device cuda \
   --resume \
   --skip-completed-samples \
@@ -80,7 +79,8 @@ is intentionally no waveform-normalization option. Raw context construction uses
 polyphase `scipy.signal.resample_poly`, masked mean squared medoid distances,
 block-wise candidate scoring, compact context caches under
 `cache/raw_context/`, and does not retain full segment banks unless
-`--retain-segment-banks` is set.
+`--retain-segment-banks` is set. `exact_medoid` always evaluates all windows;
+`--max-prototype-candidates` applies only to `sampled_medoid`.
 
 Short waveforms are zero-padded only when they are shorter than one raw segment,
 and the valid mask excludes padded samples from distance, evidence, overlap-add,
@@ -142,7 +142,8 @@ length and window coverage, so the runner stores total evidence alongside
 window-sign rates, valid-sample counts, and coverage. It also writes
 `raw_diff_unscaled`, `raw_cos_unscaled`, and `raw_hyb_l1_lambda_X` rows in
 `raw_waveform_method_metrics.csv` so method, scaling, and lambda effects can be
-separated.
+separated. Raw-Diff and Raw-Cos are written once per sample, while Raw-Hyb is
+written once per lambda value.
 
 The legacy Native-Time runner still writes the older
 `dynamic_fpde_sample_metrics.csv` and LaTeX tables for frame-level feature

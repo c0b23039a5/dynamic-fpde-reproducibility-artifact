@@ -17,6 +17,9 @@
 - Extend raw CSV outputs with length-aware evidence metrics, medoid/runtime
   accounting, resampler metadata, and separate `raw_diff_unscaled`,
   `raw_cos_unscaled`, and `raw_hyb_l1_lambda_X` method rows.
+- Ensure `exact_medoid` always evaluates all windows, make `sampled_medoid`
+  candidate sampling stable across Python processes, prevent resume duplicates,
+  and write unscaled Raw-Diff/Raw-Cos method rows only once per sample.
 - Preserve the Native-Time frame-level feature runner as a legacy/comparison
   path rather than the primary confirmed workflow.
 - Replace fixed-length `prototype_length` time-series prototypes with real

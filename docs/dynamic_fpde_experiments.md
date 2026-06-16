@@ -131,7 +131,6 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --seed 0 \
   --prototype-selection exact_medoid \
   --medoid-block-size 128 \
-  --max-prototype-candidates 1500 \
   --context-device cuda \
   --resume \
   --skip-completed-samples \
@@ -143,6 +142,12 @@ includes the train split hash, fold, seed, sample rate, segment/hop seconds,
 prototype method, block size, candidate cap, context device, and installed FPDE
 version. With `--resume --skip-completed-samples`, fold-level checkpoints are
 written under `fold_<N>/results/` plus `fold_<N>/completed_samples.txt`.
+`--resume` also skips completed samples by default, so rerunning a checkpointed
+fold does not duplicate CSV rows. `--overwrite` ignores checkpoints and caches.
+The compact context cache stores prototypes and masks only; when
+`--retain-segment-banks` is used, the cache is disabled so the in-memory context
+really contains full segment banks. If a compact context cache cannot be read,
+the runner deletes it and rebuilds the context.
 
 Optional label-conditioned RAW generation is connected with:
 
@@ -199,6 +204,15 @@ metadata.
 `raw_cos_unscaled`, and `raw_hyb_l1_lambda_X`. This separates method choice,
 component scaling, and lambda choice; `lambda_hyb=0.0` and `lambda_hyb=1.0` in
 Raw-Hyb remain L1-scaled hybrid endpoints, not the pure unscaled components.
+Raw-Diff and Raw-Cos are written once per sample because they do not depend on
+lambda; Raw-Hyb rows are written once per lambda.
+
+Runtime columns separate fold-level context cost from sample-level explanation
+and save cost. `fold_context_runtime_sec` is recorded for provenance,
+`context_runtime_amortized_sec` divides it by the number of test samples, and
+`sample_total_runtime_sec` excludes the fold context build. The context builder
+uses exclusive timers for resampling, windowing, bank stacking, and medoid
+selection.
 
 The runner reports all lambda grid points. It records no test-sample
 best-lambda selection for evaluation; `best_lambda` from the lower-level FPDE

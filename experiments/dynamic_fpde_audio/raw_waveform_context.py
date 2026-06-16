@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
@@ -234,12 +235,13 @@ def _candidate_indices(
     seed: int,
     label: Any,
 ) -> np.ndarray:
+    if prototype_selection == "exact_medoid":
+        return np.arange(n_items, dtype=np.intp)
     if max_candidates_per_label is None or int(max_candidates_per_label) <= 0 or int(max_candidates_per_label) >= n_items:
         return np.arange(n_items, dtype=np.intp)
     limit = int(max_candidates_per_label)
-    if prototype_selection == "exact_medoid":
-        return np.linspace(0, n_items - 1, num=limit, dtype=np.intp)
-    digest = abs(hash((str(label), int(seed)))) % (2**32)
+    payload = f"{label}|{int(seed)}".encode("utf-8")
+    digest = int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="little")
     rng = np.random.default_rng(digest)
     return np.sort(rng.choice(n_items, size=limit, replace=False).astype(np.intp))
 
@@ -417,7 +419,6 @@ def prepare_fast_raw_waveform_fpde_context(
     medoid_details: dict[str, Any] = {}
 
     for label in prototype_labels.tolist():
-        label_start = perf_counter()
         windows_by_label: list[np.ndarray] = []
         masks_by_label: list[np.ndarray] = []
         provenance: list[dict[str, Any]] = []
@@ -448,9 +449,10 @@ def prepare_fast_raw_waveform_fpde_context(
                 )
         if not windows_by_label:
             raise ValueError(f"no windows found for label={label!r}")
+        bank_start = perf_counter()
         windows_arr = np.stack(windows_by_label, axis=0).astype(float, copy=False)
         masks_arr = np.stack(masks_by_label, axis=0).astype(bool, copy=False)
-        timings["bank_build_runtime_sec"] += perf_counter() - label_start
+        timings["bank_build_runtime_sec"] += perf_counter() - bank_start
         medoid_start = perf_counter()
         medoid_idx, details = _choose_medoid(
             windows_arr,
@@ -495,6 +497,7 @@ def prepare_fast_raw_waveform_fpde_context(
         "source_sr": tuple(source_sample_rates),
         "target_sr": int(target_sr),
         "resampler_version": _resampler_version(),
+        "runtime_accounting": "exclusive_timers",
     }
     context = fpde.RawWaveformFPDEContext(
         segment_banks=segment_banks,

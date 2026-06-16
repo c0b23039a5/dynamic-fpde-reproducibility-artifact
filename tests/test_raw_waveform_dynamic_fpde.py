@@ -56,7 +56,7 @@ def test_raw_cli_defaults_and_lambda_grid():
     assert args.target_sr == 16000
     assert args.segment_sec == pytest.approx(0.5)
     assert args.hop_sec == pytest.approx(0.1)
-    assert args.device == "cpu"
+    assert args.device == "cuda"
     assert args.save_plots is True
     assert not hasattr(args, "normalize")
     assert parse_lambda_grid(args.lambda_grid) == tuple(i / 10.0 for i in range(11))
@@ -187,6 +187,8 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
             "0.01",
             "--lambda-grid",
             "0.0,0.5,1.0",
+            "--device",
+            "cpu",
             "--no-plots",
         ]
     )

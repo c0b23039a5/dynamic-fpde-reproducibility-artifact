@@ -373,7 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hop-sec", type=float, default=0.1)
     parser.add_argument("--lambda-grid", default=None, help="Comma-separated lambda_hyb values. Defaults to 0.0..1.0 by 0.1.")
     parser.add_argument("--top-k-segments", type=int, default=1)
-    parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cpu")
+    parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cuda")
     parser.add_argument("--raw-generator", default=None, help="Optional module:function hook for label-conditioned RAW generation.")
     parser.add_argument("--skip-errors", action="store_true")
     parser.add_argument("--no-plots", dest="save_plots", action="store_false", help="Skip PNG plot artifacts.")
@@ -405,6 +405,7 @@ def main(argv: list[str] | None = None) -> int:
         "lambda_grid": list(lambda_grid) if lambda_grid is not None else list(DEFAULT_LAMBDA_GRID),
         "top_k_segments": args.top_k_segments,
         "device": args.device,
+        "cuda_runtime": "CUDA 13 via cupy-cuda13x when --device cuda is used",
         "raw_generator": args.raw_generator,
         "input_space": "raw waveform + label",
         "uses_acoustic_features": False,

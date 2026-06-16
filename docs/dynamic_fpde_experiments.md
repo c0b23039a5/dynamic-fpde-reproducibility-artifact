@@ -48,10 +48,13 @@ target_sr = 16000
 segment_sec = 0.5
 hop_sec = 0.1
 lambda_grid = 0.0, 0.1, ..., 1.0
+device = cuda
 ```
 
 For the default sample rate this gives `segment_length = 8000` and
-`hop_length = 1600`.
+`hop_length = 1600`. `device = cuda` uses CUDA 13 through `cupy-cuda13x`; the
+runner fails clearly if the CUDA 13/CuPy backend is unavailable. Use
+`--device cpu` only for portable smoke tests or debugging.
 
 ## Raw Prototypes And Evidence
 
@@ -107,7 +110,8 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --output-dir outputs/raw_waveform_dynamic_fpde_esc50_smoke \
   --mode smoke \
   --fold 1 \
-  --seed 0
+  --seed 0 \
+  --device cuda
 ```
 
 Full 5-fold run:
@@ -118,7 +122,8 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --output-dir outputs/raw_waveform_dynamic_fpde_esc50_full \
   --mode full \
   --folds 1,2,3,4,5 \
-  --seed 0
+  --seed 0 \
+  --device cuda
 ```
 
 Optional label-conditioned RAW generation is connected with:
@@ -128,6 +133,7 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --dataset-root data/ESC-50 \
   --output-dir outputs/raw_waveform_dynamic_fpde_esc50_smoke \
   --mode smoke \
+  --device cuda \
   --raw-generator my_package.my_module:generator
 ```
 

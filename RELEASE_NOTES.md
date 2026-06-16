@@ -7,6 +7,9 @@
   keeps variable-length clips, evaluates Raw-Hyb for `lambda_hyb=0.0..1.0`,
   saves lambda-wise raw artifacts, and records skipped generation when no
   external RAW generator hook is supplied.
+- Make the Raw-Waveform runner default to `--device cuda` for CUDA 13
+  processing through `cupy-cuda13x`; CPU execution remains available with
+  explicit `--device cpu`.
 - Preserve the Native-Time frame-level feature runner as a legacy/comparison
   path rather than the primary confirmed workflow.
 - Replace fixed-length `prototype_length` time-series prototypes with real

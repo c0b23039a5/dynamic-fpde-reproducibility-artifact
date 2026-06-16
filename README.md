@@ -24,8 +24,8 @@ python -m pip install -e ".[dev,dynamic-audio,plot]"
 python -m pytest
 ```
 
-For NVIDIA CUDA acceleration, install the CUDA extra with the CuPy wheel that
-matches CUDA 13.x:
+Raw-Waveform runs default to NVIDIA CUDA 13 through CuPy. Install the CUDA
+extra with the CUDA 13.x CuPy wheel:
 
 ```bash
 python -m pip install -e ".[dev,dynamic-audio,plot,cuda]"
@@ -50,7 +50,8 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --output-dir outputs/raw_waveform_dynamic_fpde_esc50_smoke \
   --mode smoke \
   --fold 1 \
-  --seed 0
+  --seed 0 \
+  --device cuda
 ```
 
 Full 5-fold run:
@@ -61,13 +62,15 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --output-dir outputs/raw_waveform_dynamic_fpde_esc50_full \
   --mode full \
   --folds 1,2,3,4,5 \
-  --seed 0
+  --seed 0 \
+  --device cuda
 ```
 
 Raw defaults are `--target-sr 16000`, `--segment-sec 0.5`, `--hop-sec 0.1`,
-and the full `--lambda-grid` of `0.0, 0.1, ..., 1.0`. Use `--device cpu`,
-`--device cuda`, or `--device auto` for the package Raw-Waveform computation.
-There is intentionally no waveform-normalization option.
+the full `--lambda-grid` of `0.0, 0.1, ..., 1.0`, and `--device cuda`.
+`--device cuda` uses `cupy-cuda13x` and fails clearly if CUDA 13/CuPy is not
+available. Use `--device cpu` only for portable smoke tests or debugging. There
+is intentionally no waveform-normalization option.
 
 Short waveforms are zero-padded only when they are shorter than one raw segment,
 and the valid mask excludes padded samples from distance, evidence, overlap-add,
@@ -81,6 +84,7 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --dataset-root data/ESC-50 \
   --output-dir outputs/raw_waveform_dynamic_fpde_esc50_smoke \
   --mode smoke \
+  --device cuda \
   --raw-generator my_package.my_module:generator
 ```
 

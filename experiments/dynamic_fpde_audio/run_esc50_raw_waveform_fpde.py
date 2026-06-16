@@ -18,6 +18,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable, Sequence
 
+from tqdm.auto import tqdm
+
 import numpy as np
 
 from experiments.dynamic_fpde_audio.aggregate import write_csv
@@ -191,7 +193,12 @@ def _load_waveforms(samples: Sequence[ESCSample]) -> tuple[list[np.ndarray], lis
     sample_ids: list[str] = []
     errors: list[dict[str, object]] = []
     runtime_sec = 0.0
-    for sample in samples:
+    for sample in tqdm(
+    samples,
+    desc="Loading training WAV files",
+    unit="file",
+    dynamic_ncols=True,
+    ):
         try:
             start = perf_counter()
             waveform, sample_rate = _read_waveform(sample.audio_path)

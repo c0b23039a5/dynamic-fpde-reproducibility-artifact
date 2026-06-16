@@ -57,6 +57,11 @@ def test_raw_cli_defaults_and_lambda_grid():
     assert args.segment_sec == pytest.approx(0.5)
     assert args.hop_sec == pytest.approx(0.1)
     assert args.device == "cuda"
+    assert args.context_device == "cpu"
+    assert args.prototype_selection == "exact_medoid"
+    assert args.medoid_block_size == 128
+    assert args.max_prototype_candidates == 0
+    assert args.retain_segment_banks is False
     assert args.save_plots is True
     assert not hasattr(args, "normalize")
     assert parse_lambda_grid(args.lambda_grid) == tuple(i / 10.0 for i in range(11))
@@ -107,6 +112,40 @@ def test_raw_waveform_context_handles_stereo_short_padding_and_masking():
     np.testing.assert_array_equal(result["effective_window_masks"][0], [True, True, False, False])
 
 
+def test_fast_raw_context_uses_masked_mean_medoid_and_discards_banks():
+    import fpde
+
+    from experiments.dynamic_fpde_audio.raw_waveform_context import prepare_fast_raw_waveform_fpde_context
+
+    result = prepare_fast_raw_waveform_fpde_context(
+        fpde,
+        [
+            np.array([0.0, 0.0]),
+            np.array([10.0, 10.0]),
+            np.array([1.0, 1.0]),
+            np.array([-5.0, -5.0]),
+        ],
+        ["class_a", "class_a", "class_a", "class_b"],
+        sample_rates=[1000, 1000, 1000, 1000],
+        sample_ids=["a0", "a10", "a1", "b"],
+        target_sr=1000,
+        segment_sec=0.002,
+        hop_sec=0.002,
+        prototype_selection="exact_medoid",
+        medoid_block_size=2,
+        retain_segment_banks=False,
+    )
+
+    context = result.context
+    np.testing.assert_allclose(context.prototypes["class_a"], [1.0, 1.0])
+    assert context.prototype_indices["class_a"] == 2
+    assert context.segment_banks == {}
+    assert context.details["distance_metric"] == "masked_mean_squared_distance"
+    assert context.details["resample_method"] == "scipy.signal.resample_poly"
+    assert context.details["prototype_provenance"]["class_a"]["source_sample_id"] == "a1"
+    assert result.timings["medoid_runtime_sec"] >= 0.0
+
+
 def test_raw_runner_smoke_outputs_schema_and_generator_hook(tmp_path: Path):
     from experiments.dynamic_fpde_audio.datasets import read_esc50_metadata
     from experiments.dynamic_fpde_audio.run_esc50_raw_waveform_fpde import RAW_SAMPLE_FIELDS, run_fold
@@ -124,7 +163,7 @@ def test_raw_runner_smoke_outputs_schema_and_generator_hook(tmp_path: Path):
         calls.append((label, lambda_hyb, role, metadata["start_sample"], metadata["end_sample"]))
         return segment
 
-    rows, errors = run_fold(
+    rows, method_rows, errors = run_fold(
         samples,
         fold=1,
         output_dir=output_dir,
@@ -143,10 +182,13 @@ def test_raw_runner_smoke_outputs_schema_and_generator_hook(tmp_path: Path):
 
     assert errors == []
     assert rows
+    assert method_rows
     assert set(RAW_SAMPLE_FIELDS).issuperset(rows[0])
     assert {row["lambda_hyb"] for row in rows} == {0.0, 0.5, 1.0}
     assert {row["shape_match"] for row in rows} == {True}
     assert all(np.isfinite(float(row["evidence"])) for row in rows)
+    assert {"evidence_per_window", "evidence_per_valid_sample", "raw_diff_unscaled_evidence", "raw_cos_unscaled_evidence"}.issubset(rows[0])
+    assert {"raw_diff_unscaled", "raw_cos_unscaled", "raw_hyb_l1_lambda_0.5"}.issubset({row["method"] for row in method_rows})
     assert calls
     assert {call[2] for call in calls}.issubset({"target", "rival"})
 
@@ -196,9 +238,11 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
     assert exit_code == 0
     config = output_dir / "raw_waveform_config.json"
     sample_metrics = output_dir / "results" / "raw_waveform_sample_metrics.csv"
+    method_metrics = output_dir / "results" / "raw_waveform_method_metrics.csv"
     summary = output_dir / "results" / "raw_waveform_summary_by_lambda.csv"
     assert config.exists()
     assert sample_metrics.exists()
+    assert method_metrics.exists()
     assert summary.exists()
 
     with sample_metrics.open("r", encoding="utf-8", newline="") as handle:
@@ -218,5 +262,20 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
         "generation_status",
         "top_positive_start_sample",
         "top_negative_start_sample",
+        "evidence_per_window",
+        "evidence_per_valid_sample",
+        "positive_window_rate",
+        "negative_window_rate",
+        "n_valid_samples",
+        "coverage_rate",
+        "raw_diff_unscaled_evidence",
+        "raw_cos_unscaled_evidence",
+        "prototype_selection",
+        "medoid_runtime_sec",
     }.issubset(rows[0])
     assert {row["generation_status"] for row in rows} == {'{"rival": "skipped", "target": "skipped"}'}
+
+    with method_metrics.open("r", encoding="utf-8", newline="") as handle:
+        method_rows = list(csv.DictReader(handle))
+    assert method_rows
+    assert {"raw_diff_unscaled", "raw_cos_unscaled", "raw_hyb_l1_lambda_0.5"}.issubset({row["method"] for row in method_rows})

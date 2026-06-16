@@ -28,7 +28,7 @@ Allowed preprocessing is deliberately narrow:
 - decode audio
 - reject empty, NaN, or inf waveforms
 - convert stereo to mono
-- convert sample rate to `target_sr`
+- convert sample rate to `target_sr` with `scipy.signal.resample_poly`
 - keep each waveform variable-length
 - split into sliding raw windows
 - zero-pad only waveforms shorter than one segment, with a valid mask
@@ -49,6 +49,8 @@ segment_sec = 0.5
 hop_sec = 0.1
 lambda_grid = 0.0, 0.1, ..., 1.0
 device = cuda
+prototype_selection = exact_medoid
+medoid_block_size = 128
 ```
 
 For the default sample rate this gives `segment_length = 8000` and
@@ -58,14 +60,18 @@ runner fails clearly if the CUDA 13/CuPy backend is unavailable. Use
 
 ## Raw Prototypes And Evidence
 
-Training waveforms are converted to raw sliding windows. For each label, the
-FPDE Raw API builds a raw segment bank and selects a label-medoid raw segment
-prototype:
+Training waveforms are converted to raw sliding windows label by label. The
+artifact runner builds one label bank at a time, scores candidate medoids with
+block-wise matrix operations, and then keeps only the selected prototype unless
+`--retain-segment-banks` is set. The medoid distance is masked mean squared
+distance, so short padded windows are not favored merely because they contain
+fewer valid samples:
 
 ```text
 B_c = {w_1, w_2, ..., w_M}
 p_target in R^L
 p_rival in R^L
+d(w_i, w_j) = mean((w_i[valid] - w_j[valid]) ** 2)
 ```
 
 For each test waveform, the target label is the sample label. If no rival label
@@ -123,8 +129,20 @@ python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --mode full \
   --folds 1,2,3,4,5 \
   --seed 0 \
+  --prototype-selection exact_medoid \
+  --medoid-block-size 128 \
+  --max-prototype-candidates 1500 \
+  --context-device cuda \
+  --resume \
+  --skip-completed-samples \
   --device cuda
 ```
+
+`--context-cache-dir` defaults to `outputs/.../cache/raw_context`. The cache key
+includes the train split hash, fold, seed, sample rate, segment/hop seconds,
+prototype method, block size, candidate cap, context device, and installed FPDE
+version. With `--resume --skip-completed-samples`, fold-level checkpoints are
+written under `fold_<N>/results/` plus `fold_<N>/completed_samples.txt`.
 
 Optional label-conditioned RAW generation is connected with:
 
@@ -153,8 +171,10 @@ The Raw-Waveform runner writes:
 
 - `raw_waveform_config.json`
 - `results/raw_waveform_sample_metrics.csv`
+- `results/raw_waveform_method_metrics.csv`
 - `results/raw_waveform_summary_by_lambda.csv`
 - `results/raw_waveform_errors.csv`, only when errors are skipped
+- `fold_<N>/results/*.csv` and `fold_<N>/completed_samples.txt`, when resume/checkpoint mode is used
 - `samples/<sample_id>/summary.csv`
 - `samples/<sample_id>/raw_hyb_lambda_X/window_evidence.csv`
 - `samples/<sample_id>/raw_hyb_lambda_X/top_positive_segment.wav`
@@ -169,7 +189,20 @@ Sample metrics include `sample_id`, `fold`, `target_label`, `rival_label`,
 `lambda_hyb`, `evidence`, `n_windows`, `input_length`, `sample_rate`,
 `phi_shape`, `shape_match`, generation status, top positive segment metadata,
 top negative segment metadata, runtime columns, `device`, `segment_length`, and
-`hop_length`.
+`hop_length`. They also include `evidence_total`, `evidence_per_window`,
+`evidence_per_valid_sample`, positive/negative/absolute evidence,
+positive/negative window rates, `n_valid_samples`, `coverage_rate`, medoid
+runtime, context cache status, prototype selection settings, and resampler
+metadata.
+
+`raw_waveform_method_metrics.csv` stores separate rows for `raw_diff_unscaled`,
+`raw_cos_unscaled`, and `raw_hyb_l1_lambda_X`. This separates method choice,
+component scaling, and lambda choice; `lambda_hyb=0.0` and `lambda_hyb=1.0` in
+Raw-Hyb remain L1-scaled hybrid endpoints, not the pure unscaled components.
+
+The runner reports all lambda grid points. It records no test-sample
+best-lambda selection for evaluation; `best_lambda` from the lower-level FPDE
+object is intentionally ignored by the artifact CSV surface.
 
 Every lambda result must satisfy:
 

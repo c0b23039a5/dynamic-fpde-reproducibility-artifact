@@ -10,6 +10,13 @@
 - Make the Raw-Waveform runner default to `--device cuda` for CUDA 13
   processing through `cupy-cuda13x`; CPU execution remains available with
   explicit `--device cpu`.
+- Add artifact-side fast Raw context construction with polyphase
+  `scipy.signal.resample_poly`, block-wise `exact_medoid`/`sampled_medoid`
+  prototype selection, masked mean squared medoid distances, optional candidate
+  caps, compact context caches, and fold-level resume/checkpoint outputs.
+- Extend raw CSV outputs with length-aware evidence metrics, medoid/runtime
+  accounting, resampler metadata, and separate `raw_diff_unscaled`,
+  `raw_cos_unscaled`, and `raw_hyb_l1_lambda_X` method rows.
 - Preserve the Native-Time frame-level feature runner as a legacy/comparison
   path rather than the primary confirmed workflow.
 - Replace fixed-length `prototype_length` time-series prototypes with real

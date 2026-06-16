@@ -82,7 +82,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in summary
         ],
-        "Native-Time Dynamic-FPDE all-sample prototype-evidence removal and recovery diagnostics; random baseline repetitions are averaged per sample.",
+        "Legacy/comparison Native-Time Dynamic-FPDE all-sample prototype-evidence removal and recovery diagnostics; random baseline repetitions are averaged per sample.",
         "tab:dynamic-fpde-main-results",
     )
     written.append(main_path)
@@ -104,7 +104,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in positive_summary
         ],
-        "Native-Time Dynamic-FPDE selection-positive-margin results using the common Native-Time Dynamic-Diff target/rival pair; random repetitions are averaged per sample.",
+        "Legacy/comparison Native-Time Dynamic-FPDE selection-positive-margin results using the common Native-Time Dynamic-Diff target/rival pair; random repetitions are averaged per sample.",
         "tab:dynamic-fpde-positive-margin-results",
     )
     written.append(positive_path)
@@ -137,7 +137,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in summary
         ],
-        "Method-specific prototype margins and common Native-Time Dynamic-Diff selection margins by method.",
+        "Legacy/comparison method-specific prototype margins and common Native-Time Dynamic-Diff selection margins by method.",
         "tab:dynamic-fpde-margin-summary",
     )
     written.append(margin_path)
@@ -156,7 +156,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in additivity
         ],
-        "Native-Time Dynamic-FPDE auditable attribution-sum residuals for Phi.",
+        "Legacy/comparison Native-Time Dynamic-FPDE auditable attribution-sum residuals for Phi.",
         "tab:dynamic-fpde-additivity",
     )
     written.append(additivity_path)
@@ -177,7 +177,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
             ]
             for row in lambdas
         ],
-        "Native-Time Dynamic-Hyb lambda selection with normalized prototype-evidence diagnostics.",
+        "Legacy/comparison Native-Time Dynamic-Hyb lambda selection with normalized prototype-evidence diagnostics.",
         "tab:dynamic-fpde-lambda",
     )
     written.append(lambda_path)
@@ -211,7 +211,7 @@ def generate_tables(results_dir: str | Path, tables_dir: str | Path) -> list[Pat
         shape_path,
         ["Method", "N", "Shape OK", "Target Proto Meta", "Rival Proto Meta", "Max Abs. Residual"],
         check_rows,
-        "Native-Time checks for Phi shape preservation, exemplar prototype metadata availability, and attribution additivity.",
+        "Legacy/comparison Native-Time checks for Phi shape preservation, exemplar prototype metadata availability, and attribution additivity.",
         "tab:dynamic-fpde-native-time-checks",
     )
     written.append(shape_path)

@@ -1,19 +1,18 @@
 # Dynamic-FPDE Reproducibility Artifact
 
-This repository contains reproducible **Native-Time Dynamic-FPDE** experiments
-for time-resolved prototype-directional audio explanations.
+This repository contains reproducible **Raw-Waveform Dynamic-FPDE**
+experiments for time-resolved prototype-directional audio explanations.
 
-Native-Time Dynamic-FPDE is the intended Dynamic-FPDE formulation in this
-artifact. It operates on frame-level acoustic feature matrices, not raw
-waveform samples. For each clip, the input is `X_i` with shape `(T_i, F)` and
-the primary output is `Phi_i` with the same shape. Longer clips produce longer
-`Phi_i` matrices. `time_importance` and `feature_importance` are auxiliary
-summaries of `Phi_i`, not replacements for it.
+Raw-Waveform Dynamic-FPDE is the primary confirmed ESC-50 workflow in this
+artifact. It uses only raw waveform samples and labels. It does not extract
+acoustic features, spectrograms, or MFCCs, and it does not apply peak, RMS, or
+loudness waveform normalization. Audio is decoded, stereo is converted to mono
+inside the FPDE Raw API, and sample rate is converted to `target_sr`; clip
+durations remain variable.
 
-The older resampled-time, `prototype_length`-based Dynamic-FPDE path is legacy
-and benchmark-oriented only. The primary ESC-50 runner rejects
-`--prototype-length` instead of silently falling back to fixed-length temporal
-resampling.
+The previous Native-Time/frame-level acoustic feature runner is preserved as a
+legacy/comparison path. The older resampled-time, `prototype_length`-based
+Dynamic-FPDE path remains legacy and benchmark-oriented only.
 
 ## Installation
 
@@ -38,7 +37,7 @@ On this Windows/OneDrive checkout, `uv` may be more reliable:
 uv --system-certs run --link-mode=copy --extra dev --extra dynamic-audio --extra plot python -m pytest
 ```
 
-## ESC-50 Experiments
+## ESC-50 Raw-Waveform Experiments
 
 The runner expects ESC-50 to be available locally and does not redistribute or
 download the raw dataset.
@@ -46,102 +45,92 @@ download the raw dataset.
 Smoke run:
 
 ```bash
-python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
+python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --dataset-root data/ESC-50 \
-  --output-dir outputs/native_time_dynamic_fpde_esc50_smoke \
+  --output-dir outputs/raw_waveform_dynamic_fpde_esc50_smoke \
   --mode smoke \
   --fold 1 \
-  --seed 0 \
-  --prototype-mode exemplar \
-  --prototype-selection nearest_to_class_centroid_frame \
-  --anchor zero \
-  --normalize none \
-  --lambda-hyb 0.5 \
-  --backend cpu \
-  --make-figures
+  --seed 0
 ```
 
 Full 5-fold run:
 
 ```bash
-python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
+python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
   --dataset-root data/ESC-50 \
-  --output-dir outputs/native_time_dynamic_fpde_esc50_full \
+  --output-dir outputs/raw_waveform_dynamic_fpde_esc50_full \
   --mode full \
   --folds 1,2,3,4,5 \
-  --seed 0 \
-  --prototype-mode exemplar \
-  --prototype-selection nearest_to_class_centroid_frame \
-  --anchor zero \
-  --normalize none \
-  --lambda-hyb 0.5 \
-  --backend cpu \
-  --make-figures
+  --seed 0
 ```
 
-Audio decode, target-sample-rate resampling, mono conversion, and acoustic
-feature extraction, feature standardization, and deletion/insertion diagnostics
-stay on CPU. Native-Time FPDE computation can run on CPU or, with
-`--backend cuda`, as CuPy elementwise attribution tensor computation. CUDA mode
-never pads or fixed-length-resamples variable-length clips; it groups only
-samples that naturally share the same `(T, F)`.
+Raw defaults are `--target-sr 16000`, `--segment-sec 0.5`, `--hop-sec 0.1`,
+and the full `--lambda-grid` of `0.0, 0.1, ..., 1.0`. Use `--device cpu`,
+`--device cuda`, or `--device auto` for the package Raw-Waveform computation.
+There is intentionally no waveform-normalization option.
 
-Feature extraction may zero-pad a clip shorter than one analysis frame so that
-the clip yields `T == 1`. This is intra-clip minimum-frame padding only; it is
-not temporal alignment, not fixed-length resampling, and not dense tensor
-batching. ESC-50 clips are normally longer than one frame.
+Short waveforms are zero-padded only when they are shorter than one raw segment,
+and the valid mask excludes padded samples from distance, evidence, overlap-add,
+and exported segments. Longer waveforms remain variable-length and get an
+end-aligned final window when needed.
+
+Optional label-conditioned RAW generation is supplied with:
+
+```bash
+python experiments/dynamic_fpde_audio/run_esc50_raw_waveform_fpde.py \
+  --dataset-root data/ESC-50 \
+  --output-dir outputs/raw_waveform_dynamic_fpde_esc50_smoke \
+  --mode smoke \
+  --raw-generator my_package.my_module:generator
+```
+
+The generator signature is
+`generator(label, lambda_hyb, segment, sample_rate, role, metadata)`. It is
+called only after Raw-Hyb has selected the top positive or negative segment. If
+no generator is provided, generation is recorded as `skipped`.
 
 ## Main Outputs
 
-The ESC-50 runner writes:
+The Raw-Waveform ESC-50 runner writes:
 
-- `results/dynamic_fpde_sample_metrics.csv`
-- `results/dynamic_fpde_summary_by_method.csv`
-- `results/dynamic_fpde_summary_positive_margin_by_method.csv`
-- `results/dynamic_fpde_lambda_selection.csv`
-- `results/dynamic_fpde_additivity_summary.csv`
-- `tables/table_dynamic_fpde_main_results.tex`
-- `tables/table_dynamic_fpde_positive_margin_results.tex`
-- `tables/table_dynamic_fpde_margin_summary.tex`
-- `tables/table_dynamic_fpde_additivity.tex`
-- `tables/table_dynamic_fpde_lambda.tex`
-- `tables/table_dynamic_fpde_native_time_checks.tex`
+- `raw_waveform_config.json`
+- `results/raw_waveform_sample_metrics.csv`
+- `results/raw_waveform_summary_by_lambda.csv`
+- `samples/<sample_id>/summary.csv`
+- `samples/<sample_id>/raw_hyb_lambda_X/window_evidence.csv`
+- `samples/<sample_id>/raw_hyb_lambda_X/top_positive_segment.wav`
+- `samples/<sample_id>/raw_hyb_lambda_X/top_negative_segment.wav`
+- `samples/<sample_id>/raw_hyb_lambda_X/generated_target_lambda_X.wav`, when a generator is provided
+- `samples/<sample_id>/raw_hyb_lambda_X/generated_rival_lambda_X.wav`, when a generator is provided
+- `samples/<sample_id>/raw_hyb_lambda_X/waveform_phi_hyb.png`
+- `samples/<sample_id>/raw_hyb_lambda_X/comparison_positive.png`
+- `samples/<sample_id>/raw_hyb_lambda_X/comparison_negative.png`
+- `samples/<sample_id>/raw_hyb_lambda_X/metrics.json`
 
 Feature caches under `outputs/**/cache/features/` are ignored by default
-because they are derived from ESC-50 audio.
-
-`dynamic_fpde_sample_metrics.csv` keeps `runtime_sec` as a compatibility alias
-for `total_runtime_sec`. Runtime accounting is:
-
-- `selection_runtime_sec`: shared target/rival selection time for the sample,
-  repeated on each method row that uses the same common rival
-- `native_fpde_runtime_sec`: Native-Time attribution tensor computation time,
-  or baseline ranking construction time for ranking baselines
-- `diagnostic_runtime_sec`: CPU prototype-evidence diagnostic time
-- `total_runtime_sec`: `selection_runtime_sec + native_fpde_runtime_sec +
-  diagnostic_runtime_sec`
+because they are derived from the legacy Native-Time feature runner, not the
+primary Raw-Waveform runner.
 
 ## Interpretation Limits
 
-Dynamic-FPDE explains prototype evidence in frame-level acoustic feature space.
-It does not claim raw waveform attribution, causal explanation, black-box model
-faithfulness, DTW alignment, or verse/chorus alignment. Dynamic-FPDE itself is
-not sampling-rate invariant; raw audio is decoded, resampled to `target_sr`,
-converted to mono, converted to frame-level features, and then explained.
+Raw-Waveform Dynamic-FPDE explains raw-sample prototype evidence after
+converting audio to a common `target_sr`. It is not a causal explanation, does
+not claim black-box model faithfulness, does not perform DTW alignment, and
+does not claim sampling-rate invariance.
 
-Total evidence can depend on the number of frames, so do not directly compare
-total evidence across clips with different lengths without normalization or
-careful interpretation. Prototype frames are auditable through
-`source_sample_id`, `source_frame_index`, and `source_time_sec`.
+Raw-Diff, Raw-Cos, and Raw-Hyb are computed against raw segment prototypes from
+label-specific segment banks. Positive evidence supports the target label;
+negative evidence supports the rival label. Total evidence can depend on clip
+length and window coverage, so compare across clips carefully.
 
-The runner includes ranking baselines named `energy_baseline_raw`,
-`feature_norm_baseline_standardized`, and `random_baseline`. They are frame
-ranking diagnostics, not FPDE attribution methods. The underlying norm
-baseline helper is named `frame_norm_scores`; `energy_frame_scores` remains a
-backward-compatible alias.
+The legacy Native-Time runner still writes the older
+`dynamic_fpde_sample_metrics.csv` and LaTeX tables for frame-level feature
+comparison experiments. Those outputs are no longer the primary Raw-Waveform
+surface.
 
-See `docs/dynamic_fpde_experiments.md` for dataset assumptions, output schemas,
-metric definitions, CUDA details, and table generation.
+See `docs/dynamic_fpde_experiments.md` for the Raw-Waveform processing
+contract, output schema, generator hook, and legacy Native-Time comparison
+runner.
 
 ## Citation
 

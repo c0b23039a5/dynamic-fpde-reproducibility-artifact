@@ -2,15 +2,21 @@
 
 ## Unreleased
 
-- Make Native-Time Dynamic-FPDE the primary ESC-50 formulation.
+- Make Raw-Waveform Dynamic-FPDE the primary ESC-50 formulation.
+- Add `run_esc50_raw_waveform_fpde.py`, which uses raw waveform + label only,
+  keeps variable-length clips, evaluates Raw-Hyb for `lambda_hyb=0.0..1.0`,
+  saves lambda-wise raw artifacts, and records skipped generation when no
+  external RAW generator hook is supplied.
+- Preserve the Native-Time frame-level feature runner as a legacy/comparison
+  path rather than the primary confirmed workflow.
 - Replace fixed-length `prototype_length` time-series prototypes with real
   exemplar frame prototype vectors.
 - Reject legacy `--prototype-length` in the primary runner.
 - Report `Phi.shape == X.shape`, prototype metadata, Native-Time additivity,
   and prototype-evidence deletion/insertion diagnostics.
-- Clarify that Dynamic-FPDE explains frame-level acoustic features, not raw
-  waveform samples, causal effects, sampling-rate-invariant behavior, or
-  musical-section alignment.
+- Clarify that the Raw-Waveform path does not use acoustic feature extraction,
+  spectrograms, MFCCs, or waveform normalization, and that label-conditioned
+  RAW generation happens only after important segment extraction.
 - Batch CUDA attribution over all resolved test samples that naturally share
   the same `(T, F)` while keeping diagnostics on CPU.
 - Keep CUDA Dynamic-Hyb diff, cosine, and hybrid attribution arrays on GPU

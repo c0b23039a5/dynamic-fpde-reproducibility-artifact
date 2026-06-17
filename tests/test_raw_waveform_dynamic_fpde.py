@@ -73,6 +73,16 @@ def test_raw_cli_defaults_and_lambda_grid():
     assert args.prototype_selection == "exact_medoid"
     assert args.medoid_block_size == 128
     assert args.max_prototype_candidates == 0
+    assert args.alignment_mode == "none"
+    assert args.shift_max_ms == pytest.approx(20.0)
+    assert args.coarse_step_ms == pytest.approx(1.0)
+    assert args.fine_radius_ms == pytest.approx(2.0)
+    assert args.fine_step_samples == 1
+    assert args.coarse_top_k == 3
+    assert args.minimum_overlap_ratio == pytest.approx(0.8)
+    assert args.alignment_temperature == pytest.approx(0.05)
+    assert args.overlap_penalty_weight == pytest.approx(1.0)
+    assert args.generation_scope == "none"
     assert args.retain_segment_banks is False
     assert args.save_plots is True
     assert not hasattr(args, "normalize")
@@ -223,6 +233,145 @@ def test_raw_context_cache_roundtrip_preserves_prototypes(tmp_path: Path):
     assert loaded.segment_banks == {}
 
 
+def test_shift_with_mask_and_masked_distances_are_non_circular():
+    from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import (
+        masked_shift_cosine,
+        masked_shift_mse,
+        shift_with_mask,
+    )
+
+    waveform = np.array([1.0, 2.0, 3.0, 4.0])
+    mask = np.array([True, True, True, True])
+    original = waveform.copy()
+
+    shifted_pos, mask_pos = shift_with_mask(waveform, mask, 1)
+    shifted_neg, mask_neg = shift_with_mask(waveform, mask, -1)
+    shifted_max, mask_max = shift_with_mask(waveform, mask, 4)
+
+    np.testing.assert_allclose(shifted_pos, [0.0, 1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(mask_pos, [False, True, True, True])
+    np.testing.assert_allclose(shifted_neg, [2.0, 3.0, 4.0, 0.0])
+    np.testing.assert_array_equal(mask_neg, [True, True, True, False])
+    np.testing.assert_allclose(shifted_max, [0.0, 0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(mask_max, [False, False, False, False])
+    np.testing.assert_allclose(waveform, original)
+
+    window = np.array([0.0, 1.0, 2.0, 3.0])
+    mse, overlap = masked_shift_mse(window, mask, waveform, mask, 1)
+    assert mse == pytest.approx(0.0)
+    assert overlap == pytest.approx(0.75)
+    assert masked_shift_mse(window, np.zeros(4, dtype=bool), waveform, mask, 1)[0] == math.inf
+    cos_dist, _ = masked_shift_cosine(window, mask, waveform, mask, 1)
+    assert cos_dist == pytest.approx(0.0)
+    zero_cos, _ = masked_shift_cosine(np.zeros(4), mask, np.zeros(4), mask, 0)
+    assert zero_cos == pytest.approx(0.0)
+    one_zero_cos, _ = masked_shift_cosine(np.ones(4), mask, np.zeros(4), mask, 0)
+    assert one_zero_cos == pytest.approx(0.5)
+
+
+def test_coarse_to_fine_soft_alignment_recovers_known_lag():
+    from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import (
+        ShiftAlignmentConfig,
+        align_prototype_to_window,
+        generate_coarse_lags,
+        masked_shift_mse,
+    )
+
+    sample_rate = 1000
+    prototype = np.array([1.0, 2.0, 3.0, 4.0, 0.0, 0.0])
+    prototype_mask = np.array([True, True, True, True, False, False])
+    window = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 0.0])
+    window_mask = np.array([True, True, True, True, True, False])
+    config = ShiftAlignmentConfig(
+        alignment_mode="soft_bounded",
+        shift_max_ms=5.0,
+        coarse_step_ms=2.0,
+        fine_radius_ms=2.0,
+        fine_step_samples=1,
+        coarse_top_k=2,
+        minimum_overlap_ratio=0.5,
+        alignment_temperature=0.01,
+    )
+
+    coarse = generate_coarse_lags(sample_rate, 5.0, 2.0)
+    assert {-5, 0, 5}.issubset(set(coarse.tolist()))
+    result = align_prototype_to_window(
+        window,
+        window_mask,
+        prototype,
+        prototype_mask,
+        sample_rate=sample_rate,
+        lambda_hyb=1.0,
+        config=config,
+    )
+
+    assert result.valid is True
+    assert result.best_lag_samples == 1
+    assert np.isfinite(result.costs).any()
+    assert np.isfinite(result.entropy)
+    assert np.isfinite(result.confidence)
+    assert result.weights.sum() == pytest.approx(1.0)
+    best_mse, _ = masked_shift_mse(window, window_mask, prototype, prototype_mask, result.best_lag_samples)
+    zero_mse, _ = masked_shift_mse(window, window_mask, prototype, prototype_mask, 0)
+    assert best_mse < zero_mse
+
+
+def test_shift_robust_raw_explanation_preserves_shape_and_lambda_endpoints():
+    import fpde
+
+    from experiments.dynamic_fpde_audio.raw_waveform_context import prepare_fast_raw_waveform_fpde_context
+    from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import (
+        LAMBDA_GRID,
+        ShiftAlignmentConfig,
+        explain_shift_robust_raw_waveform,
+    )
+
+    context = prepare_fast_raw_waveform_fpde_context(
+        fpde,
+        [np.array([1.0, 2.0, 3.0, 4.0]), -np.array([1.0, 2.0, 3.0, 4.0])],
+        ["class_a", "class_b"],
+        sample_rates=[1000, 1000],
+        target_sr=1000,
+        segment_sec=0.006,
+        hop_sec=0.003,
+    ).context
+    waveform = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    explanation = explain_shift_robust_raw_waveform(
+        fpde,
+        waveform,
+        context,
+        sample_rate=1000,
+        target_label="class_a",
+        lambda_grid=LAMBDA_GRID,
+        top_k_segments=1,
+        device="cpu",
+        config=ShiftAlignmentConfig(
+            alignment_mode="soft_bounded",
+            shift_max_ms=5.0,
+            coarse_step_ms=2.0,
+            fine_radius_ms=2.0,
+            minimum_overlap_ratio=0.5,
+            alignment_temperature=0.01,
+            generation_scope="none",
+        ),
+    )
+
+    assert tuple(explanation.lambda_results) == LAMBDA_GRID
+    for lambda_hyb, result in explanation.lambda_results.items():
+        assert result["phi"].shape == waveform.shape
+        assert np.all(np.isfinite(result["phi"]))
+        assert result["details"]["alignment_mode"] == "soft_bounded"
+        assert result["details"]["alignment_valid_rate"] > 0.0
+    np.testing.assert_allclose(
+        explanation.lambda_results[0.0]["window_evidence"],
+        np.sum(explanation.lambda_results[0.0]["window_attributions"], axis=1),
+    )
+    np.testing.assert_allclose(
+        explanation.lambda_results[1.0]["window_evidence"],
+        np.sum(explanation.lambda_results[1.0]["window_attributions"], axis=1),
+    )
+
+
 @pytest.mark.skipif(not _cuda_available(), reason="CuPy CUDA device is not available")
 def test_fast_raw_context_cpu_cuda_medoid_match():
     import fpde
@@ -294,9 +443,69 @@ def test_raw_waveform_cpu_cuda_phi_match():
         )
 
 
+@pytest.mark.skipif(not _cuda_available(), reason="CuPy CUDA device is not available")
+def test_shift_robust_raw_waveform_cpu_cuda_phi_match():
+    import fpde
+
+    from experiments.dynamic_fpde_audio.raw_waveform_context import prepare_fast_raw_waveform_fpde_context
+    from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import ShiftAlignmentConfig, explain_shift_robust_raw_waveform
+
+    context = prepare_fast_raw_waveform_fpde_context(
+        fpde,
+        [np.array([1.0, 2.0, 3.0, 4.0]), -np.array([1.0, 2.0, 3.0, 4.0])],
+        ["class_a", "class_b"],
+        sample_rates=[1000, 1000],
+        target_sr=1000,
+        segment_sec=0.006,
+        hop_sec=0.003,
+    ).context
+    waveform = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    config = ShiftAlignmentConfig(
+        alignment_mode="soft_bounded",
+        shift_max_ms=5.0,
+        coarse_step_ms=2.0,
+        fine_radius_ms=2.0,
+        minimum_overlap_ratio=0.5,
+        alignment_temperature=0.01,
+    )
+    cpu = explain_shift_robust_raw_waveform(
+        fpde,
+        waveform,
+        context,
+        sample_rate=1000,
+        target_label="class_a",
+        lambda_grid=[0.0, 0.5, 1.0],
+        device="cpu",
+        config=config,
+    )
+    cuda = explain_shift_robust_raw_waveform(
+        fpde,
+        waveform,
+        context,
+        sample_rate=1000,
+        target_label="class_a",
+        lambda_grid=[0.0, 0.5, 1.0],
+        device="cuda",
+        config=config,
+    )
+
+    for lambda_hyb in (0.0, 0.5, 1.0):
+        np.testing.assert_allclose(cpu.lambda_results[lambda_hyb]["phi"], cuda.lambda_results[lambda_hyb]["phi"], rtol=1e-10, atol=1e-10)
+        np.testing.assert_allclose(
+            cpu.lambda_results[lambda_hyb]["window_evidence"],
+            cuda.lambda_results[lambda_hyb]["window_evidence"],
+            rtol=1e-10,
+            atol=1e-10,
+        )
+        assert cpu.lambda_results[lambda_hyb]["details"]["alignment_valid_rate"] == pytest.approx(
+            cuda.lambda_results[lambda_hyb]["details"]["alignment_valid_rate"]
+        )
+
+
 def test_raw_runner_smoke_outputs_schema_and_generator_hook(tmp_path: Path):
     from experiments.dynamic_fpde_audio.datasets import read_esc50_metadata
     from experiments.dynamic_fpde_audio.run_esc50_raw_waveform_fpde import RAW_SAMPLE_FIELDS, run_fold
+    from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import ShiftAlignmentConfig
 
     dataset_root = tmp_path / "ESC-50"
     output_dir = tmp_path / "outputs"
@@ -311,7 +520,7 @@ def test_raw_runner_smoke_outputs_schema_and_generator_hook(tmp_path: Path):
         calls.append((label, lambda_hyb, role, metadata["start_sample"], metadata["end_sample"]))
         return segment
 
-    rows, method_rows, errors = run_fold(
+    rows, method_rows, alignment_rows, errors = run_fold(
         samples,
         fold=1,
         output_dir=output_dir,
@@ -326,21 +535,23 @@ def test_raw_runner_smoke_outputs_schema_and_generator_hook(tmp_path: Path):
         raw_generator=generator,
         skip_errors=False,
         save_plots=False,
+        alignment_config=ShiftAlignmentConfig(generation_scope="selected"),
     )
 
     assert errors == []
     assert rows
     assert method_rows
+    assert alignment_rows == []
     assert set(RAW_SAMPLE_FIELDS).issuperset(rows[0])
     assert {row["lambda_hyb"] for row in rows} == {0.0, 0.5, 1.0}
     assert {row["shape_match"] for row in rows} == {True}
     assert all(np.isfinite(float(row["evidence"])) for row in rows)
     assert {"evidence_per_window", "evidence_per_valid_sample", "raw_diff_unscaled_evidence", "raw_cos_unscaled_evidence"}.issubset(rows[0])
-    assert {"raw_diff_unscaled", "raw_cos_unscaled", "raw_hyb_l1_lambda_0.5"}.issubset({row["method"] for row in method_rows})
+    assert {"raw_diff_unscaled_no_alignment", "raw_cos_unscaled_no_alignment", "raw_hyb_l1_no_alignment_lambda_0.5"}.issubset({row["method"] for row in method_rows})
     sample_ids = {row["sample_id"] for row in rows}
-    assert sum(1 for row in method_rows if row["method"] == "raw_diff_unscaled") == len(sample_ids)
-    assert sum(1 for row in method_rows if row["method"] == "raw_cos_unscaled") == len(sample_ids)
-    assert sum(1 for row in method_rows if str(row["method"]).startswith("raw_hyb_l1_lambda_")) == len(sample_ids) * 3
+    assert sum(1 for row in method_rows if row["method"] == "raw_diff_unscaled_no_alignment") == len(sample_ids)
+    assert sum(1 for row in method_rows if row["method"] == "raw_cos_unscaled_no_alignment") == len(sample_ids)
+    assert sum(1 for row in method_rows if str(row["method"]).startswith("raw_hyb_l1_no_alignment_lambda_")) == len(sample_ids) * 3
     assert all(float(row["sample_total_runtime_sec"]) >= 0.0 for row in rows)
     assert all(float(row["context_runtime_amortized_sec"]) >= 0.0 for row in rows)
     assert calls
@@ -385,6 +596,8 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
             "0.0,0.5,1.0",
             "--device",
             "cpu",
+            "--generation-scope",
+            "selected",
             "--no-plots",
         ]
     )
@@ -393,10 +606,12 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
     config = output_dir / "raw_waveform_config.json"
     sample_metrics = output_dir / "results" / "raw_waveform_sample_metrics.csv"
     method_metrics = output_dir / "results" / "raw_waveform_method_metrics.csv"
+    alignment_metrics = output_dir / "results" / "window_alignment_metrics.csv"
     summary = output_dir / "results" / "raw_waveform_summary_by_lambda.csv"
     assert config.exists()
     assert sample_metrics.exists()
     assert method_metrics.exists()
+    assert alignment_metrics.exists()
     assert summary.exists()
 
     with sample_metrics.open("r", encoding="utf-8", newline="") as handle:
@@ -436,7 +651,7 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
     with method_metrics.open("r", encoding="utf-8", newline="") as handle:
         method_rows = list(csv.DictReader(handle))
     assert method_rows
-    assert {"raw_diff_unscaled", "raw_cos_unscaled", "raw_hyb_l1_lambda_0.5"}.issubset({row["method"] for row in method_rows})
+    assert {"raw_diff_unscaled_no_alignment", "raw_cos_unscaled_no_alignment", "raw_hyb_l1_no_alignment_lambda_0.5"}.issubset({row["method"] for row in method_rows})
 
     with summary.open("r", encoding="utf-8", newline="") as handle:
         summary_rows = list(csv.DictReader(handle))
@@ -450,6 +665,107 @@ def test_raw_cli_writes_dataset_level_outputs(tmp_path: Path):
         "negative_window_rate_mean",
         "coverage_rate_mean",
     }.issubset(summary_rows[0])
+
+
+def test_raw_cli_soft_bounded_outputs_alignment_metrics(tmp_path: Path):
+    from experiments.dynamic_fpde_audio.datasets import read_esc50_metadata, split_esc50, get_mode_config
+    from experiments.dynamic_fpde_audio.run_esc50_raw_waveform_fpde import _raw_context_cache_key, main
+    from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import ShiftAlignmentConfig
+
+    dataset_root = tmp_path / "ESC-50"
+    output_dir = tmp_path / "shift_outputs"
+    _make_raw_esc50(dataset_root)
+    samples = read_esc50_metadata(dataset_root)
+    train_samples, _, _ = split_esc50(samples, fold=1, mode_config=get_mode_config("smoke"), seed=11)
+    none_key = _raw_context_cache_key(
+        train_samples,
+        fold=1,
+        seed=11,
+        target_sr=1000,
+        segment_sec=0.02,
+        hop_sec=0.01,
+        prototype_selection="exact_medoid",
+        medoid_block_size=128,
+        max_prototype_candidates=None,
+        context_device="cpu",
+        alignment_config=ShiftAlignmentConfig(alignment_mode="none"),
+    )
+    soft_key = _raw_context_cache_key(
+        train_samples,
+        fold=1,
+        seed=11,
+        target_sr=1000,
+        segment_sec=0.02,
+        hop_sec=0.01,
+        prototype_selection="exact_medoid",
+        medoid_block_size=128,
+        max_prototype_candidates=None,
+        context_device="cpu",
+        alignment_config=ShiftAlignmentConfig(alignment_mode="soft_bounded", shift_max_ms=5.0),
+    )
+    assert none_key != soft_key
+
+    assert (
+        main(
+            [
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(output_dir),
+                "--mode",
+                "smoke",
+                "--fold",
+                "1",
+                "--seed",
+                "11",
+                "--target-sr",
+                "1000",
+                "--segment-sec",
+                "0.02",
+                "--hop-sec",
+                "0.01",
+                "--lambda-grid",
+                "0.0,1.0",
+                "--alignment-mode",
+                "soft_bounded",
+                "--shift-max-ms",
+                "5",
+                "--coarse-step-ms",
+                "2",
+                "--fine-radius-ms",
+                "2",
+                "--fine-step-samples",
+                "1",
+                "--coarse-top-k",
+                "2",
+                "--minimum-overlap-ratio",
+                "0.5",
+                "--alignment-temperature",
+                "0.01",
+                "--device",
+                "cpu",
+                "--no-plots",
+            ]
+        )
+        == 0
+    )
+
+    with (output_dir / "results" / "raw_waveform_sample_metrics.csv").open("r", encoding="utf-8", newline="") as handle:
+        sample_rows = list(csv.DictReader(handle))
+    with (output_dir / "results" / "raw_waveform_method_metrics.csv").open("r", encoding="utf-8", newline="") as handle:
+        method_rows = list(csv.DictReader(handle))
+    with (output_dir / "results" / "window_alignment_metrics.csv").open("r", encoding="utf-8", newline="") as handle:
+        alignment_rows = list(csv.DictReader(handle))
+
+    assert sample_rows
+    assert alignment_rows
+    assert {row["alignment_mode"] for row in sample_rows} == {"soft_bounded"}
+    assert {row["alignment_mode"] for row in alignment_rows} == {"soft_bounded"}
+    assert {"mean_abs_target_lag_ms", "alignment_valid_rate", "target_alignment_confidence_mean"}.issubset(sample_rows[0])
+    assert {"shift_robust_raw_diff_lambda_1.0", "shift_robust_raw_cos_lambda_1.0", "shift_robust_raw_hyb_lambda_1.0"}.issubset(
+        {row["method"] for row in method_rows}
+    )
+    assert all(np.isfinite(float(row["target_alignment_confidence"])) for row in alignment_rows)
 
 
 def test_raw_resume_does_not_duplicate_rows_and_retain_banks_disables_cache(tmp_path: Path):
@@ -494,8 +810,8 @@ def test_raw_resume_does_not_duplicate_rows_and_retain_banks_disables_cache(tmp_
         method_rows = list(csv.DictReader(handle))
     sample_ids = {row["sample_id"] for row in sample_rows}
     assert len(sample_rows) == len(sample_ids) * 3
-    assert sum(1 for row in method_rows if row["method"] == "raw_diff_unscaled") == len(sample_ids)
-    assert sum(1 for row in method_rows if row["method"] == "raw_cos_unscaled") == len(sample_ids)
+    assert sum(1 for row in method_rows if row["method"] == "raw_diff_unscaled_no_alignment") == len(sample_ids)
+    assert sum(1 for row in method_rows if row["method"] == "raw_cos_unscaled_no_alignment") == len(sample_ids)
 
     retain_output = tmp_path / "retain_outputs"
     assert (

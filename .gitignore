@@ -47,3 +47,5 @@ outputs/**/cache/raw_waveforms/
 outputs/**/cache/raw_waveforms/*.npz
 outputs/**/cache/features/
 outputs/**/cache/features/*.npz
+
+outputs/**

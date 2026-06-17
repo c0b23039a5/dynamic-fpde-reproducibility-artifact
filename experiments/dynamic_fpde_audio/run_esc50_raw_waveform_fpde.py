@@ -13,6 +13,8 @@ import hashlib
 import importlib
 import json
 import math
+import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
@@ -21,6 +23,10 @@ from typing import Any, Callable, Iterable, Sequence
 from tqdm.auto import tqdm
 
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from experiments.dynamic_fpde_audio.aggregate import write_csv
 from experiments.dynamic_fpde_audio.datasets import (
@@ -36,6 +42,11 @@ from experiments.dynamic_fpde_audio.raw_waveform_context import (
     resample_raw_waveform_polyphase,
     save_raw_context_cache,
 )
+from experiments.dynamic_fpde_audio.shift_robust_raw_waveform import (
+    ShiftAlignmentConfig,
+    alignment_result_to_rows,
+    explain_shift_robust_raw_waveform,
+)
 
 
 DEFAULT_LAMBDA_GRID = tuple(i / 10.0 for i in range(11))
@@ -48,6 +59,10 @@ RAW_SAMPLE_FIELDS = [
     "filename",
     "target_label",
     "rival_label",
+    "alignment_mode",
+    "shift_max_ms",
+    "minimum_overlap_ratio",
+    "alignment_temperature",
     "lambda_hyb",
     "evidence",
     "evidence_total",
@@ -77,11 +92,27 @@ RAW_SAMPLE_FIELDS = [
     "top_positive_start_sample",
     "top_positive_end_sample",
     "top_positive_evidence",
+    "top_positive_target_best_lag_samples",
+    "top_positive_target_best_lag_ms",
+    "top_positive_rival_best_lag_samples",
+    "top_positive_rival_best_lag_ms",
+    "top_positive_target_alignment_confidence",
+    "top_positive_rival_alignment_confidence",
+    "top_positive_target_overlap_ratio",
+    "top_positive_rival_overlap_ratio",
     "top_negative_rank",
     "top_negative_window_index",
     "top_negative_start_sample",
     "top_negative_end_sample",
     "top_negative_evidence",
+    "top_negative_target_best_lag_samples",
+    "top_negative_target_best_lag_ms",
+    "top_negative_rival_best_lag_samples",
+    "top_negative_rival_best_lag_ms",
+    "top_negative_target_alignment_confidence",
+    "top_negative_rival_alignment_confidence",
+    "top_negative_target_overlap_ratio",
+    "top_negative_rival_overlap_ratio",
     "runtime_sec",
     "context_runtime_sec",
     "fold_context_runtime_sec",
@@ -118,6 +149,16 @@ RAW_SAMPLE_FIELDS = [
     "context_cache_hit",
     "resample_method",
     "resampler_version",
+    "mean_abs_target_lag_ms",
+    "mean_abs_rival_lag_ms",
+    "max_abs_target_lag_ms",
+    "max_abs_rival_lag_ms",
+    "target_boundary_hit_rate",
+    "rival_boundary_hit_rate",
+    "target_alignment_confidence_mean",
+    "rival_alignment_confidence_mean",
+    "alignment_confidence_mean",
+    "alignment_valid_rate",
 ]
 
 RAW_METHOD_FIELDS = [
@@ -129,6 +170,7 @@ RAW_METHOD_FIELDS = [
     "target_label",
     "rival_label",
     "method",
+    "alignment_mode",
     "lambda_hyb",
     "evidence_total",
     "evidence_per_window",
@@ -146,6 +188,32 @@ RAW_METHOD_FIELDS = [
     "device",
     "segment_length",
     "hop_length",
+]
+
+WINDOW_ALIGNMENT_FIELDS = [
+    "dataset",
+    "fold",
+    "seed",
+    "sample_id",
+    "target_label",
+    "rival_label",
+    "window_index",
+    "lambda_hyb",
+    "alignment_mode",
+    "target_best_lag_samples",
+    "target_best_lag_ms",
+    "rival_best_lag_samples",
+    "rival_best_lag_ms",
+    "target_alignment_cost",
+    "rival_alignment_cost",
+    "target_overlap_ratio",
+    "rival_overlap_ratio",
+    "target_alignment_entropy",
+    "rival_alignment_entropy",
+    "target_alignment_confidence",
+    "rival_alignment_confidence",
+    "target_alignment_valid",
+    "rival_alignment_valid",
 ]
 
 
@@ -235,6 +303,20 @@ def _package_version(package: str) -> str:
         return "unknown"
 
 
+def _git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
 def _hash_train_split(train_samples: Sequence[ESCSample]) -> str:
     digest = hashlib.sha256()
     for sample in sorted(train_samples, key=lambda item: item.sample_id):
@@ -266,6 +348,7 @@ def _raw_context_cache_key(
     medoid_block_size: int,
     max_prototype_candidates: int | None,
     context_device: str,
+    alignment_config: ShiftAlignmentConfig,
 ) -> str:
     payload = {
         "dataset_hash": _hash_train_split(train_samples),
@@ -278,7 +361,17 @@ def _raw_context_cache_key(
         "medoid_block_size": int(medoid_block_size),
         "max_prototype_candidates": _none_if_nonpositive(max_prototype_candidates),
         "context_device": context_device,
+        "alignment_mode": alignment_config.alignment_mode,
+        "shift_max_ms": float(alignment_config.shift_max_ms),
+        "coarse_step_ms": float(alignment_config.coarse_step_ms),
+        "fine_radius_ms": float(alignment_config.fine_radius_ms),
+        "fine_step_samples": int(alignment_config.fine_step_samples),
+        "coarse_top_k": int(alignment_config.coarse_top_k),
+        "minimum_overlap_ratio": float(alignment_config.minimum_overlap_ratio),
+        "alignment_temperature": float(alignment_config.alignment_temperature),
+        "overlap_penalty_weight": float(alignment_config.overlap_penalty_weight),
         "fpde_version": _package_version("fpde"),
+        "artifact_commit": _git_commit(),
     }
     text = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
@@ -355,6 +448,14 @@ def _segment_metadata(rows: list[dict[str, Any]]) -> dict[str, object]:
             "start_sample": "",
             "end_sample": "",
             "evidence": "",
+            "target_best_lag_samples": "",
+            "target_best_lag_ms": "",
+            "rival_best_lag_samples": "",
+            "rival_best_lag_ms": "",
+            "target_alignment_confidence": "",
+            "rival_alignment_confidence": "",
+            "target_overlap_ratio": "",
+            "rival_overlap_ratio": "",
         }
     row = rows[0]
     return {
@@ -363,6 +464,14 @@ def _segment_metadata(rows: list[dict[str, Any]]) -> dict[str, object]:
         "start_sample": row.get("start_sample", ""),
         "end_sample": row.get("end_sample", ""),
         "evidence": row.get("evidence", ""),
+        "target_best_lag_samples": row.get("target_best_lag_samples", ""),
+        "target_best_lag_ms": row.get("target_best_lag_ms", ""),
+        "rival_best_lag_samples": row.get("rival_best_lag_samples", ""),
+        "rival_best_lag_ms": row.get("rival_best_lag_ms", ""),
+        "target_alignment_confidence": row.get("target_alignment_confidence", ""),
+        "rival_alignment_confidence": row.get("rival_alignment_confidence", ""),
+        "target_overlap_ratio": row.get("target_overlap_ratio", ""),
+        "rival_overlap_ratio": row.get("rival_overlap_ratio", ""),
     }
 
 
@@ -404,6 +513,12 @@ def _window_evidence_metrics(
 def _detail_vector(details: dict[str, Any], key: str) -> np.ndarray:
     values = details.get(key, [])
     return np.asarray(values, dtype=float)
+
+
+def _mean_detail(values: Any) -> object:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)] if arr.size else arr
+    return float(np.mean(arr)) if arr.size else ""
 
 
 def _row_from_lambda_result(
@@ -450,6 +565,10 @@ def _row_from_lambda_result(
         "filename": sample.filename,
         "target_label": explanation.target_label,
         "rival_label": explanation.rival_label,
+        "alignment_mode": details.get("alignment_mode", explanation.details.get("alignment_mode", "none")),
+        "shift_max_ms": details.get("shift_max_ms", explanation.details.get("shift_max_ms", "")),
+        "minimum_overlap_ratio": details.get("minimum_overlap_ratio", explanation.details.get("minimum_overlap_ratio", "")),
+        "alignment_temperature": details.get("alignment_temperature", explanation.details.get("alignment_temperature", "")),
         "lambda_hyb": float(lambda_hyb),
         "evidence": float(result["evidence"]),
         **window_metrics,
@@ -469,11 +588,27 @@ def _row_from_lambda_result(
         "top_positive_start_sample": top_positive["start_sample"],
         "top_positive_end_sample": top_positive["end_sample"],
         "top_positive_evidence": top_positive["evidence"],
+        "top_positive_target_best_lag_samples": top_positive["target_best_lag_samples"],
+        "top_positive_target_best_lag_ms": top_positive["target_best_lag_ms"],
+        "top_positive_rival_best_lag_samples": top_positive["rival_best_lag_samples"],
+        "top_positive_rival_best_lag_ms": top_positive["rival_best_lag_ms"],
+        "top_positive_target_alignment_confidence": top_positive["target_alignment_confidence"],
+        "top_positive_rival_alignment_confidence": top_positive["rival_alignment_confidence"],
+        "top_positive_target_overlap_ratio": top_positive["target_overlap_ratio"],
+        "top_positive_rival_overlap_ratio": top_positive["rival_overlap_ratio"],
         "top_negative_rank": top_negative["rank"],
         "top_negative_window_index": top_negative["window_index"],
         "top_negative_start_sample": top_negative["start_sample"],
         "top_negative_end_sample": top_negative["end_sample"],
         "top_negative_evidence": top_negative["evidence"],
+        "top_negative_target_best_lag_samples": top_negative["target_best_lag_samples"],
+        "top_negative_target_best_lag_ms": top_negative["target_best_lag_ms"],
+        "top_negative_rival_best_lag_samples": top_negative["rival_best_lag_samples"],
+        "top_negative_rival_best_lag_ms": top_negative["rival_best_lag_ms"],
+        "top_negative_target_alignment_confidence": top_negative["target_alignment_confidence"],
+        "top_negative_rival_alignment_confidence": top_negative["rival_alignment_confidence"],
+        "top_negative_target_overlap_ratio": top_negative["target_overlap_ratio"],
+        "top_negative_rival_overlap_ratio": top_negative["rival_overlap_ratio"],
         "runtime_sec": sample_total_runtime_sec,
         "context_runtime_sec": context_runtime_sec,
         "fold_context_runtime_sec": context_runtime_sec,
@@ -510,6 +645,16 @@ def _row_from_lambda_result(
         "context_cache_hit": bool(context_cache_hit),
         "resample_method": explanation.details.get("resample_method", ""),
         "resampler_version": explanation.details.get("resampler_version", ""),
+        "mean_abs_target_lag_ms": details.get("mean_abs_target_lag_ms", ""),
+        "mean_abs_rival_lag_ms": details.get("mean_abs_rival_lag_ms", ""),
+        "max_abs_target_lag_ms": details.get("max_abs_target_lag_ms", ""),
+        "max_abs_rival_lag_ms": details.get("max_abs_rival_lag_ms", ""),
+        "target_boundary_hit_rate": details.get("target_boundary_hit_rate", ""),
+        "rival_boundary_hit_rate": details.get("rival_boundary_hit_rate", ""),
+        "target_alignment_confidence_mean": _mean_detail(details.get("target_alignment_confidence_by_lambda", [])),
+        "rival_alignment_confidence_mean": _mean_detail(details.get("rival_alignment_confidence_by_lambda", [])),
+        "alignment_confidence_mean": details.get("alignment_confidence_mean", ""),
+        "alignment_valid_rate": details.get("alignment_valid_rate", ""),
     }
 
 
@@ -534,6 +679,7 @@ def _method_rows_from_lambda_result(
         "filename": sample.filename,
         "target_label": explanation.target_label,
         "rival_label": explanation.rival_label,
+        "alignment_mode": details.get("alignment_mode", explanation.details.get("alignment_mode", "none")),
         "runtime_sec": float(runtime_sec),
         "sample_total_runtime_sec": float(runtime_sec),
         "device": details.get("device", explanation.details.get("device", "")),
@@ -544,14 +690,26 @@ def _method_rows_from_lambda_result(
     window_starts = np.asarray(result.get("window_starts", []), dtype=np.intp)
     input_length = int(explanation.waveform.shape[0])
     method_specs: list[tuple[str, float | str, np.ndarray]] = []
-    if include_unscaled_components:
+    alignment_mode = str(base["alignment_mode"])
+    if alignment_mode == "none":
+        if include_unscaled_components:
+            method_specs.extend(
+                [
+                    ("raw_diff_unscaled_no_alignment", "", _detail_vector(details, "diff_evidence")),
+                    ("raw_cos_unscaled_no_alignment", "", _detail_vector(details, "cos_evidence")),
+                ]
+            )
+        method_specs.append((f"raw_hyb_l1_no_alignment_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), np.asarray(result["window_evidence"], dtype=float)))
+    elif alignment_mode in {"hard_bounded", "soft_bounded"}:
         method_specs.extend(
             [
-                ("raw_diff_unscaled", "", _detail_vector(details, "diff_evidence")),
-                ("raw_cos_unscaled", "", _detail_vector(details, "cos_evidence")),
+                (f"shift_robust_raw_diff_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), _detail_vector(details, "diff_evidence")),
+                (f"shift_robust_raw_cos_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), _detail_vector(details, "cos_evidence")),
+                (f"shift_robust_raw_hyb_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), np.asarray(result["window_evidence"], dtype=float)),
             ]
         )
-    method_specs.append((f"raw_hyb_l1_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), np.asarray(result["window_evidence"], dtype=float)))
+    else:
+        method_specs.append((f"raw_hyb_l1_lambda_{float(lambda_hyb):.1f}", float(lambda_hyb), np.asarray(result["window_evidence"], dtype=float)))
     for method, lambda_value, evidence_values in method_specs:
         metrics = _window_evidence_metrics(evidence_values, effective_masks, input_length, window_starts)
         rows.append({**base, "method": method, "lambda_hyb": lambda_value, **metrics})
@@ -659,8 +817,10 @@ def run_fold(
     raw_generator: RawGenerator | None = None,
     skip_errors: bool = False,
     save_plots: bool = True,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    alignment_config: ShiftAlignmentConfig | None = None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     fpde = _require_raw_fpde()
+    align_cfg = alignment_config or ShiftAlignmentConfig()
     mode_config = get_mode_config(mode)
     train_samples, _val_samples, test_samples = split_esc50(samples, fold=fold, mode_config=mode_config, seed=seed)
 
@@ -684,6 +844,7 @@ def run_fold(
             medoid_block_size=medoid_block_size,
             max_prototype_candidates=max_candidates,
             context_device=context_device,
+            alignment_config=align_cfg,
         )
         cache_path = context_cache_dir / f"esc50_fold{fold}_seed{seed}_sr{target_sr}_seg{segment_sec:g}_hop{hop_sec:g}_{cache_key}.npz"
 
@@ -736,14 +897,20 @@ def run_fold(
     completed_path = active_output_dir / "completed_samples.txt"
     fold_sample_metrics_path = fold_results_dir / "raw_waveform_sample_metrics.csv"
     fold_method_metrics_path = fold_results_dir / "raw_waveform_method_metrics.csv"
+    fold_alignment_metrics_path = fold_results_dir / "window_alignment_metrics.csv"
     completed = _read_completed(completed_path) if resume and not overwrite else set()
     rows: list[dict[str, object]] = (
-        _dedupe_rows(_read_csv_if_exists(fold_sample_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb"))
+        _dedupe_rows(_read_csv_if_exists(fold_sample_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb", "alignment_mode"))
         if resume and not overwrite
         else []
     )
     method_rows: list[dict[str, object]] = (
-        _dedupe_rows(_read_csv_if_exists(fold_method_metrics_path), ("fold", "seed", "sample_id", "method"))
+        _dedupe_rows(_read_csv_if_exists(fold_method_metrics_path), ("fold", "seed", "sample_id", "method", "alignment_mode"))
+        if resume and not overwrite
+        else []
+    )
+    alignment_rows: list[dict[str, object]] = (
+        _dedupe_rows(_read_csv_if_exists(fold_alignment_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb", "window_index", "alignment_mode"))
         if resume and not overwrite
         else []
     )
@@ -761,23 +928,40 @@ def run_fold(
             waveform = resample_raw_waveform_polyphase(waveform, source_sr=sample_rate, target_sr=target_sr)
             sample_resample_runtime = perf_counter() - sample_resample_start
             explain_start = perf_counter()
-            explanation = fpde.raw_waveform_fpde_explain_one(
-                waveform,
-                context,
-                sample_rate=target_sr,
-                target_label=sample.category,
-                lambda_grid=lambdas,
-                top_k_segments=top_k_segments,
-                generator=raw_generator,
-                device=device,
-                details={
-                    "sample_id": sample.sample_id,
-                    "fold": fold,
-                    "seed": seed,
-                    "resample_method": context.details.get("resample_method", ""),
-                    "resampler_version": context.details.get("resampler_version", ""),
-                },
-            )
+            explanation_details = {
+                "sample_id": sample.sample_id,
+                "fold": fold,
+                "seed": seed,
+                "resample_method": context.details.get("resample_method", ""),
+                "resampler_version": context.details.get("resampler_version", ""),
+                "alignment_mode": align_cfg.alignment_mode,
+            }
+            if align_cfg.alignment_mode == "none":
+                explanation = fpde.raw_waveform_fpde_explain_one(
+                    waveform,
+                    context,
+                    sample_rate=target_sr,
+                    target_label=sample.category,
+                    lambda_grid=lambdas,
+                    top_k_segments=top_k_segments,
+                    generator=raw_generator if align_cfg.generation_scope != "none" else None,
+                    device=device,
+                    details=explanation_details,
+                )
+            else:
+                explanation = explain_shift_robust_raw_waveform(
+                    fpde,
+                    waveform,
+                    context,
+                    sample_rate=target_sr,
+                    target_label=sample.category,
+                    lambda_grid=lambdas,
+                    top_k_segments=top_k_segments,
+                    generator=raw_generator,
+                    device=device,
+                    details=explanation_details,
+                    config=align_cfg,
+                )
             explain_runtime_sec = perf_counter() - explain_start
             sample_dir = active_output_dir / "samples" / sample.sample_id
             save_start = perf_counter()
@@ -824,23 +1008,39 @@ def run_fold(
                     include_unscaled_components=lambda_index == 0,
                 )
             )
-        rows = _dedupe_rows(rows, ("fold", "seed", "sample_id", "lambda_hyb"))
-        method_rows = _dedupe_rows(method_rows, ("fold", "seed", "sample_id", "method"))
+            alignment_rows.extend(
+                alignment_result_to_rows(
+                    dataset="esc50",
+                    fold=fold,
+                    seed=seed,
+                    sample_id=sample.sample_id,
+                    target_label=explanation.target_label,
+                    rival_label=explanation.rival_label,
+                    lambda_hyb=float(lambda_hyb),
+                    alignment_mode=align_cfg.alignment_mode,
+                    result=result,
+                )
+            )
+        rows = _dedupe_rows(rows, ("fold", "seed", "sample_id", "lambda_hyb", "alignment_mode"))
+        method_rows = _dedupe_rows(method_rows, ("fold", "seed", "sample_id", "method", "alignment_mode"))
+        alignment_rows = _dedupe_rows(alignment_rows, ("fold", "seed", "sample_id", "lambda_hyb", "window_index", "alignment_mode"))
         completed.add(sample.sample_id)
         if fold_output_dir is not None or resume or skip_completed_samples:
             _atomic_write_csv(fold_sample_metrics_path, rows, RAW_SAMPLE_FIELDS)
             _atomic_write_csv(fold_method_metrics_path, method_rows, RAW_METHOD_FIELDS)
+            _atomic_write_csv(fold_alignment_metrics_path, alignment_rows, WINDOW_ALIGNMENT_FIELDS)
             _atomic_write_csv(fold_results_dir / "raw_waveform_summary_by_lambda.csv", summarize_by_lambda(rows))
             _write_completed(completed_path, completed)
 
     if fold_output_dir is not None or resume or skip_completed_samples:
         _atomic_write_csv(fold_sample_metrics_path, rows, RAW_SAMPLE_FIELDS)
         _atomic_write_csv(fold_method_metrics_path, method_rows, RAW_METHOD_FIELDS)
+        _atomic_write_csv(fold_alignment_metrics_path, alignment_rows, WINDOW_ALIGNMENT_FIELDS)
         _atomic_write_csv(fold_results_dir / "raw_waveform_summary_by_lambda.csv", summarize_by_lambda(rows))
         if errors:
             _atomic_write_csv(fold_results_dir / "raw_waveform_errors.csv", errors)
         _write_completed(completed_path, completed)
-    return rows, method_rows, errors
+    return rows, method_rows, alignment_rows, errors
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -857,6 +1057,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hop-sec", type=float, default=0.1)
     parser.add_argument("--lambda-grid", default=None, help="Comma-separated lambda_hyb values. Defaults to 0.0..1.0 by 0.1.")
     parser.add_argument("--top-k-segments", type=int, default=1)
+    parser.add_argument("--alignment-mode", choices=["none", "hard_bounded", "soft_bounded"], default="none")
+    parser.add_argument("--shift-max-ms", type=float, default=20.0)
+    parser.add_argument("--coarse-step-ms", type=float, default=1.0)
+    parser.add_argument("--fine-radius-ms", type=float, default=2.0)
+    parser.add_argument("--fine-step-samples", type=int, default=1)
+    parser.add_argument("--coarse-top-k", type=int, default=3)
+    parser.add_argument("--minimum-overlap-ratio", type=float, default=0.8)
+    parser.add_argument("--alignment-temperature", type=float, default=0.05)
+    parser.add_argument("--overlap-penalty-weight", type=float, default=1.0)
+    parser.add_argument("--save-alignment-details", action="store_true")
+    parser.add_argument("--generation-scope", choices=["none", "selected", "all"], default="none")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cuda")
     parser.add_argument("--context-device", choices=["cpu", "cuda", "auto"], default="cpu")
     parser.add_argument("--prototype-selection", choices=["exact_medoid", "sampled_medoid"], default="exact_medoid")
@@ -886,6 +1097,19 @@ def main(argv: list[str] | None = None) -> int:
     folds = parse_folds(args.fold, args.folds)
     lambda_grid = parse_lambda_grid(args.lambda_grid)
     generator = _load_raw_generator(args.raw_generator)
+    alignment_config = ShiftAlignmentConfig(
+        alignment_mode=args.alignment_mode,
+        shift_max_ms=args.shift_max_ms,
+        coarse_step_ms=args.coarse_step_ms,
+        fine_radius_ms=args.fine_radius_ms,
+        fine_step_samples=args.fine_step_samples,
+        coarse_top_k=args.coarse_top_k,
+        minimum_overlap_ratio=args.minimum_overlap_ratio,
+        alignment_temperature=args.alignment_temperature,
+        overlap_penalty_weight=args.overlap_penalty_weight,
+        save_alignment_details=args.save_alignment_details,
+        generation_scope=args.generation_scope,
+    )
 
     output_dir = args.output_dir
     results_dir = output_dir / "results"
@@ -905,6 +1129,17 @@ def main(argv: list[str] | None = None) -> int:
         "hop_sec": args.hop_sec,
         "lambda_grid": list(lambda_grid) if lambda_grid is not None else list(DEFAULT_LAMBDA_GRID),
         "top_k_segments": args.top_k_segments,
+        "alignment_mode": args.alignment_mode,
+        "shift_max_ms": args.shift_max_ms,
+        "coarse_step_ms": args.coarse_step_ms,
+        "fine_radius_ms": args.fine_radius_ms,
+        "fine_step_samples": args.fine_step_samples,
+        "coarse_top_k": args.coarse_top_k,
+        "minimum_overlap_ratio": args.minimum_overlap_ratio,
+        "alignment_temperature": args.alignment_temperature,
+        "overlap_penalty_weight": args.overlap_penalty_weight,
+        "save_alignment_details": args.save_alignment_details,
+        "generation_scope": args.generation_scope,
         "device": args.device,
         "context_device": args.context_device,
         "prototype_selection": args.prototype_selection,
@@ -925,10 +1160,10 @@ def main(argv: list[str] | None = None) -> int:
         "uses_spectrogram": False,
         "uses_mfcc": False,
         "waveform_normalization": False,
-        "distance_metric": "masked_mean_squared_distance",
+        "distance_metric": "masked_mean_squared_distance" if args.alignment_mode == "none" else "shift_robust_masked_mse_cosine",
         "resample_method": "scipy.signal.resample_poly",
         "lambda_selection": "all lambda_hyb grid points are reported; test-sample best_lambda is not used for evaluation selection",
-        "label_conditioned_raw_generation": "after important segment extraction; skipped when --raw-generator is omitted",
+        "label_conditioned_raw_generation": "after important segment extraction; controlled by --generation-scope",
     }
     with (output_dir / "raw_waveform_config.json").open("w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2, sort_keys=True)
@@ -936,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
 
     all_rows: list[dict[str, object]] = []
     all_method_rows: list[dict[str, object]] = []
+    all_alignment_rows: list[dict[str, object]] = []
     all_errors: list[dict[str, object]] = []
     for fold in folds:
         fold_dir = None
@@ -943,7 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
             fold_dir = args.fold_output_dir / f"fold_{fold}"
         elif args.resume or args.skip_completed_samples:
             fold_dir = output_dir / f"fold_{fold}"
-        rows, method_rows, errors = run_fold(
+        rows, method_rows, alignment_rows, errors = run_fold(
             samples,
             fold=fold,
             output_dir=output_dir,
@@ -968,13 +1204,16 @@ def main(argv: list[str] | None = None) -> int:
             raw_generator=generator,
             skip_errors=args.skip_errors,
             save_plots=args.save_plots,
+            alignment_config=alignment_config,
         )
         all_rows.extend(rows)
         all_method_rows.extend(method_rows)
+        all_alignment_rows.extend(alignment_rows)
         all_errors.extend(errors)
 
     _atomic_write_csv(results_dir / "raw_waveform_sample_metrics.csv", all_rows, RAW_SAMPLE_FIELDS)
     _atomic_write_csv(results_dir / "raw_waveform_method_metrics.csv", all_method_rows, RAW_METHOD_FIELDS)
+    _atomic_write_csv(results_dir / "window_alignment_metrics.csv", all_alignment_rows, WINDOW_ALIGNMENT_FIELDS)
     _atomic_write_csv(results_dir / "raw_waveform_summary_by_lambda.csv", summarize_by_lambda(all_rows))
     if all_errors:
         _atomic_write_csv(results_dir / "raw_waveform_errors.csv", all_errors)

@@ -63,6 +63,12 @@ RAW_SAMPLE_FIELDS = [
     "shift_max_ms",
     "minimum_overlap_ratio",
     "alignment_temperature",
+    "alignment_run_key",
+    "rival_selection_mode",
+    "rival_selection_lambda",
+    "rival_selection_cost",
+    "rival_selection_second_best_cost",
+    "rival_selection_margin",
     "lambda_hyb",
     "evidence",
     "evidence_total",
@@ -126,6 +132,15 @@ RAW_SAMPLE_FIELDS = [
     "bank_build_runtime_sec",
     "medoid_runtime_sec",
     "rival_selection_runtime_sec",
+    "lag_batch_build_runtime_sec",
+    "coarse_metric_runtime_sec",
+    "fine_metric_runtime_sec",
+    "lambda_cost_runtime_sec",
+    "alignment_weight_runtime_sec",
+    "aligned_diff_runtime_sec",
+    "aligned_cos_runtime_sec",
+    "backend_transfer_runtime_sec",
+    "runtime_scope",
     "diff_runtime_sec",
     "cos_runtime_sec",
     "hyb_runtime_sec",
@@ -147,6 +162,7 @@ RAW_SAMPLE_FIELDS = [
     "max_prototype_candidates",
     "context_device",
     "context_cache_hit",
+    "training_audio_load_skipped",
     "resample_method",
     "resampler_version",
     "mean_abs_target_lag_ms",
@@ -159,6 +175,13 @@ RAW_SAMPLE_FIELDS = [
     "rival_alignment_confidence_mean",
     "alignment_confidence_mean",
     "alignment_valid_rate",
+    "fallback_rate",
+    "requested_device",
+    "resolved_backend",
+    "cuda_device_name",
+    "cupy_version",
+    "cuda_runtime_version",
+    "backend_fallback_used",
 ]
 
 RAW_METHOD_FIELDS = [
@@ -172,6 +195,7 @@ RAW_METHOD_FIELDS = [
     "method",
     "alignment_mode",
     "lambda_hyb",
+    "alignment_run_key",
     "evidence_total",
     "evidence_per_window",
     "evidence_per_valid_sample",
@@ -214,6 +238,10 @@ WINDOW_ALIGNMENT_FIELDS = [
     "rival_alignment_confidence",
     "target_alignment_valid",
     "rival_alignment_valid",
+    "target_fallback_used",
+    "rival_fallback_used",
+    "target_fallback_reason",
+    "rival_fallback_reason",
 ]
 
 
@@ -303,6 +331,19 @@ def _package_version(package: str) -> str:
         return "unknown"
 
 
+def _fpde_commit() -> str:
+    try:
+        import importlib.metadata
+
+        direct = importlib.metadata.distribution("fpde").read_text("direct_url.json")
+        if not direct:
+            return "unknown"
+        payload = json.loads(direct)
+        return str(payload.get("vcs_info", {}).get("commit_id", "unknown"))
+    except Exception:
+        return "unknown"
+
+
 def _git_commit() -> str:
     try:
         result = subprocess.run(
@@ -348,7 +389,6 @@ def _raw_context_cache_key(
     medoid_block_size: int,
     max_prototype_candidates: int | None,
     context_device: str,
-    alignment_config: ShiftAlignmentConfig,
 ) -> str:
     payload = {
         "dataset_hash": _hash_train_split(train_samples),
@@ -361,16 +401,8 @@ def _raw_context_cache_key(
         "medoid_block_size": int(medoid_block_size),
         "max_prototype_candidates": _none_if_nonpositive(max_prototype_candidates),
         "context_device": context_device,
-        "alignment_mode": alignment_config.alignment_mode,
-        "shift_max_ms": float(alignment_config.shift_max_ms),
-        "coarse_step_ms": float(alignment_config.coarse_step_ms),
-        "fine_radius_ms": float(alignment_config.fine_radius_ms),
-        "fine_step_samples": int(alignment_config.fine_step_samples),
-        "coarse_top_k": int(alignment_config.coarse_top_k),
-        "minimum_overlap_ratio": float(alignment_config.minimum_overlap_ratio),
-        "alignment_temperature": float(alignment_config.alignment_temperature),
-        "overlap_penalty_weight": float(alignment_config.overlap_penalty_weight),
         "fpde_version": _package_version("fpde"),
+        "fpde_commit": _fpde_commit(),
         "artifact_commit": _git_commit(),
     }
     text = json.dumps(payload, sort_keys=True)
@@ -398,6 +430,39 @@ def _dedupe_rows(rows: Iterable[dict[str, object]], key_fields: Sequence[str]) -
     return list(keyed.values())
 
 
+def _alignment_run_key(
+    *,
+    alignment_config: ShiftAlignmentConfig,
+    lambda_grid: Sequence[float] | None,
+    device: str,
+    target_sr: int,
+    segment_sec: float,
+    hop_sec: float,
+    prototype_selection: str,
+    medoid_block_size: int,
+    max_prototype_candidates: int | None,
+) -> str:
+    payload = {
+        "alignment_config": alignment_config.__dict__,
+        "lambda_grid": None if lambda_grid is None else [float(value) for value in lambda_grid],
+        "device": device,
+        "target_sr": int(target_sr),
+        "segment_sec": float(segment_sec),
+        "hop_sec": float(hop_sec),
+        "prototype_selection": prototype_selection,
+        "medoid_block_size": int(medoid_block_size),
+        "max_prototype_candidates": _none_if_nonpositive(max_prototype_candidates),
+        "artifact_commit": _git_commit(),
+        "fpde_commit": _fpde_commit(),
+    }
+    text = json.dumps(payload, sort_keys=True, default=list)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+
+
+def _completed_token(sample_id: str, run_key: str) -> str:
+    return f"{sample_id}\t{run_key}"
+
+
 def _read_completed(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -411,6 +476,40 @@ def _write_completed(path: Path, sample_ids: set[str]) -> None:
     tmp.replace(path)
 
 
+def _write_alignment_detail_part(
+    *,
+    fold_results_dir: Path,
+    rows: list[dict[str, object]],
+    sample_id: str,
+    alignment_run_key: str,
+    fmt: str,
+    overwrite: bool,
+) -> Path | None:
+    if not rows:
+        return None
+    part_dir = fold_results_dir / "window_alignment"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    safe_sample = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in sample_id)
+    stem = f"part-{safe_sample}-{alignment_run_key}"
+    if fmt == "parquet":
+        part_path = part_dir / f"{stem}.parquet"
+        if part_path.exists() and not overwrite:
+            return part_path
+        try:
+            import pandas as pd
+
+            pd.DataFrame(rows, columns=WINDOW_ALIGNMENT_FIELDS).to_parquet(part_path, index=False)
+            return part_path
+        except Exception:
+            part_path = part_dir / f"{stem}.csv"
+    else:
+        part_path = part_dir / f"{stem}.csv"
+    if part_path.exists() and not overwrite:
+        return part_path
+    _atomic_write_csv(part_path, rows, WINDOW_ALIGNMENT_FIELDS)
+    return part_path
+
+
 def parse_lambda_grid(value: str | None) -> tuple[float, ...] | None:
     if value is None or value == "":
         return DEFAULT_LAMBDA_GRID
@@ -421,6 +520,11 @@ def parse_lambda_grid(value: str | None) -> tuple[float, ...] | None:
         if not math.isfinite(item) or item < 0.0 or item > 1.0:
             raise ValueError("lambda grid values must be finite numbers in [0, 1]")
     return parsed
+
+
+def parse_generation_selected_lambdas(value: str | None) -> tuple[float, ...]:
+    parsed = parse_lambda_grid("0.0,0.5,1.0" if value in (None, "") else value)
+    return tuple(DEFAULT_LAMBDA_GRID if parsed is None else parsed)
 
 
 def _load_raw_generator(spec: str | None) -> RawGenerator | None:
@@ -541,6 +645,7 @@ def _row_from_lambda_result(
     max_prototype_candidates: int | None,
     context_device: str,
     context_cache_hit: bool,
+    alignment_run_key: str,
 ) -> dict[str, object]:
     phi = np.asarray(result["phi"], dtype=float)
     top_positive = _segment_metadata(result.get("top_positive_segments", []))
@@ -569,6 +674,12 @@ def _row_from_lambda_result(
         "shift_max_ms": details.get("shift_max_ms", explanation.details.get("shift_max_ms", "")),
         "minimum_overlap_ratio": details.get("minimum_overlap_ratio", explanation.details.get("minimum_overlap_ratio", "")),
         "alignment_temperature": details.get("alignment_temperature", explanation.details.get("alignment_temperature", "")),
+        "alignment_run_key": alignment_run_key,
+        "rival_selection_mode": details.get("rival_selection_mode", explanation.details.get("rival_selection_mode", "")),
+        "rival_selection_lambda": details.get("rival_selection_lambda", explanation.details.get("rival_selection_lambda", "")),
+        "rival_selection_cost": details.get("rival_selection_cost", explanation.details.get("rival_selection_cost", "")),
+        "rival_selection_second_best_cost": details.get("rival_selection_second_best_cost", explanation.details.get("rival_selection_second_best_cost", "")),
+        "rival_selection_margin": details.get("rival_selection_margin", explanation.details.get("rival_selection_margin", "")),
         "lambda_hyb": float(lambda_hyb),
         "evidence": float(result["evidence"]),
         **window_metrics,
@@ -622,6 +733,15 @@ def _row_from_lambda_result(
         "bank_build_runtime_sec": context_timings.get("bank_build_runtime_sec", ""),
         "medoid_runtime_sec": context_timings.get("medoid_runtime_sec", ""),
         "rival_selection_runtime_sec": details.get("rival_selection_runtime_sec", ""),
+        "lag_batch_build_runtime_sec": details.get("lag_batch_build_runtime_sec", ""),
+        "coarse_metric_runtime_sec": details.get("coarse_metric_runtime_sec", ""),
+        "fine_metric_runtime_sec": details.get("fine_metric_runtime_sec", ""),
+        "lambda_cost_runtime_sec": details.get("lambda_cost_runtime_sec", ""),
+        "alignment_weight_runtime_sec": details.get("alignment_weight_runtime_sec", ""),
+        "aligned_diff_runtime_sec": details.get("aligned_diff_runtime_sec", ""),
+        "aligned_cos_runtime_sec": details.get("aligned_cos_runtime_sec", ""),
+        "backend_transfer_runtime_sec": details.get("backend_transfer_runtime_sec", ""),
+        "runtime_scope": details.get("runtime_scope", ""),
         "diff_runtime_sec": details.get("diff_runtime_sec", ""),
         "cos_runtime_sec": details.get("cos_runtime_sec", ""),
         "hyb_runtime_sec": details.get("hyb_runtime_sec", ""),
@@ -643,6 +763,7 @@ def _row_from_lambda_result(
         "max_prototype_candidates": "" if max_prototype_candidates is None else int(max_prototype_candidates),
         "context_device": context_device,
         "context_cache_hit": bool(context_cache_hit),
+        "training_audio_load_skipped": bool(context_timings.get("training_audio_load_skipped", False)),
         "resample_method": explanation.details.get("resample_method", ""),
         "resampler_version": explanation.details.get("resampler_version", ""),
         "mean_abs_target_lag_ms": details.get("mean_abs_target_lag_ms", ""),
@@ -655,6 +776,13 @@ def _row_from_lambda_result(
         "rival_alignment_confidence_mean": _mean_detail(details.get("rival_alignment_confidence_by_lambda", [])),
         "alignment_confidence_mean": details.get("alignment_confidence_mean", ""),
         "alignment_valid_rate": details.get("alignment_valid_rate", ""),
+        "fallback_rate": details.get("fallback_rate", explanation.details.get("fallback_rate", "")),
+        "requested_device": details.get("requested_device", explanation.details.get("requested_device", "")),
+        "resolved_backend": details.get("resolved_backend", explanation.details.get("resolved_backend", "")),
+        "cuda_device_name": details.get("cuda_device_name", explanation.details.get("cuda_device_name", "")),
+        "cupy_version": details.get("cupy_version", explanation.details.get("cupy_version", "")),
+        "cuda_runtime_version": details.get("cuda_runtime_version", explanation.details.get("cuda_runtime_version", "")),
+        "backend_fallback_used": details.get("backend_fallback_used", explanation.details.get("backend_fallback_used", "")),
     }
 
 
@@ -668,6 +796,7 @@ def _method_rows_from_lambda_result(
     result: dict[str, Any],
     runtime_sec: float,
     include_unscaled_components: bool,
+    alignment_run_key: str,
 ) -> list[dict[str, object]]:
     details = dict(result.get("details", {}))
     rows: list[dict[str, object]] = []
@@ -680,6 +809,7 @@ def _method_rows_from_lambda_result(
         "target_label": explanation.target_label,
         "rival_label": explanation.rival_label,
         "alignment_mode": details.get("alignment_mode", explanation.details.get("alignment_mode", "none")),
+        "alignment_run_key": alignment_run_key,
         "runtime_sec": float(runtime_sec),
         "sample_total_runtime_sec": float(runtime_sec),
         "device": details.get("device", explanation.details.get("device", "")),
@@ -818,17 +948,11 @@ def run_fold(
     skip_errors: bool = False,
     save_plots: bool = True,
     alignment_config: ShiftAlignmentConfig | None = None,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     fpde = _require_raw_fpde()
     align_cfg = alignment_config or ShiftAlignmentConfig()
     mode_config = get_mode_config(mode)
     train_samples, _val_samples, test_samples = split_esc50(samples, fold=fold, mode_config=mode_config, seed=seed)
-
-    train_waveforms, train_rates, train_labels, train_sample_ids, train_errors, train_audio_runtime = _load_waveforms(train_samples)
-    if train_errors and not skip_errors:
-        raise RuntimeError(f"failed to load training waveforms: {train_errors[:3]}")
-    if not train_waveforms:
-        raise RuntimeError("no training waveforms were loaded")
 
     max_candidates = _none_if_nonpositive(max_prototype_candidates)
     cache_path: Path | None = None
@@ -844,12 +968,13 @@ def run_fold(
             medoid_block_size=medoid_block_size,
             max_prototype_candidates=max_candidates,
             context_device=context_device,
-            alignment_config=align_cfg,
         )
         cache_path = context_cache_dir / f"esc50_fold{fold}_seed{seed}_sr{target_sr}_seg{segment_sec:g}_hop{hop_sec:g}_{cache_key}.npz"
 
     context_cache_hit = False
     cached_context: Any | None = None
+    train_audio_runtime = 0.0
+    train_errors: list[dict[str, object]] = []
     if cache_path is not None and cache_path.exists() and not overwrite:
         context_start = perf_counter()
         try:
@@ -860,15 +985,21 @@ def run_fold(
         if cached_context is not None:
             context = cached_context
             context_timings = {
-                "audio_load_runtime_sec": train_audio_runtime,
+                "audio_load_runtime_sec": 0.0,
                 "context_runtime_sec": perf_counter() - context_start,
                 "resample_runtime_sec": 0.0,
                 "windowing_runtime_sec": 0.0,
                 "bank_build_runtime_sec": 0.0,
                 "medoid_runtime_sec": 0.0,
+                "training_audio_load_skipped": True,
             }
             context_cache_hit = True
     if cached_context is None:
+        train_waveforms, train_rates, train_labels, train_sample_ids, train_errors, train_audio_runtime = _load_waveforms(train_samples)
+        if train_errors and not skip_errors:
+            raise RuntimeError(f"failed to load training waveforms: {train_errors[:3]}")
+        if not train_waveforms:
+            raise RuntimeError("no training waveforms were loaded")
         build_result = prepare_fast_raw_waveform_fpde_context(
             fpde,
             train_waveforms,
@@ -888,29 +1019,35 @@ def run_fold(
         context = build_result.context
         context_timings = dict(build_result.timings)
         context_timings["audio_load_runtime_sec"] = train_audio_runtime
+        context_timings["training_audio_load_skipped"] = False
         if cache_path is not None:
             save_raw_context_cache(cache_path, context)
     context_runtime_sec = float(context_timings.get("context_runtime_sec", 0.0))
+    run_key = _alignment_run_key(
+        alignment_config=align_cfg,
+        lambda_grid=lambda_grid,
+        device=device,
+        target_sr=target_sr,
+        segment_sec=segment_sec,
+        hop_sec=hop_sec,
+        prototype_selection=prototype_selection,
+        medoid_block_size=medoid_block_size,
+        max_prototype_candidates=max_candidates,
+    )
 
     active_output_dir = fold_output_dir or output_dir
     fold_results_dir = active_output_dir / "results"
     completed_path = active_output_dir / "completed_samples.txt"
     fold_sample_metrics_path = fold_results_dir / "raw_waveform_sample_metrics.csv"
     fold_method_metrics_path = fold_results_dir / "raw_waveform_method_metrics.csv"
-    fold_alignment_metrics_path = fold_results_dir / "window_alignment_metrics.csv"
     completed = _read_completed(completed_path) if resume and not overwrite else set()
     rows: list[dict[str, object]] = (
-        _dedupe_rows(_read_csv_if_exists(fold_sample_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb", "alignment_mode"))
+        _dedupe_rows(_read_csv_if_exists(fold_sample_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb", "alignment_mode", "alignment_run_key"))
         if resume and not overwrite
         else []
     )
     method_rows: list[dict[str, object]] = (
-        _dedupe_rows(_read_csv_if_exists(fold_method_metrics_path), ("fold", "seed", "sample_id", "method", "alignment_mode"))
-        if resume and not overwrite
-        else []
-    )
-    alignment_rows: list[dict[str, object]] = (
-        _dedupe_rows(_read_csv_if_exists(fold_alignment_metrics_path), ("fold", "seed", "sample_id", "lambda_hyb", "window_index", "alignment_mode"))
+        _dedupe_rows(_read_csv_if_exists(fold_method_metrics_path), ("fold", "seed", "sample_id", "method", "alignment_mode", "alignment_run_key"))
         if resume and not overwrite
         else []
     )
@@ -918,7 +1055,8 @@ def run_fold(
     lambdas = None if lambda_grid is None else tuple(lambda_grid)
     n_test_samples = len(test_samples)
     for sample in test_samples:
-        if (resume or skip_completed_samples) and sample.sample_id in completed:
+        completed_token = _completed_token(sample.sample_id, run_key)
+        if (resume or skip_completed_samples) and completed_token in completed:
             continue
         try:
             audio_start = perf_counter()
@@ -973,6 +1111,7 @@ def run_fold(
             errors.append({"sample_id": sample.sample_id, "filename": sample.filename, "error": str(exc)})
             continue
 
+        sample_alignment_rows: list[dict[str, object]] = []
         for lambda_index, (lambda_hyb, result) in enumerate(sorted(explanation.lambda_results.items(), key=lambda item: item[0])):
             rows.append(
                 _row_from_lambda_result(
@@ -994,6 +1133,7 @@ def run_fold(
                     max_prototype_candidates=max_candidates,
                     context_device=context_device,
                     context_cache_hit=context_cache_hit,
+                    alignment_run_key=run_key,
                 )
             )
             method_rows.extend(
@@ -1006,9 +1146,10 @@ def run_fold(
                     result=result,
                     runtime_sec=sample_audio_runtime + sample_resample_runtime + explain_runtime_sec + save_runtime_sec,
                     include_unscaled_components=lambda_index == 0,
+                    alignment_run_key=run_key,
                 )
             )
-            alignment_rows.extend(
+            sample_alignment_rows.extend(
                 alignment_result_to_rows(
                     dataset="esc50",
                     fold=fold,
@@ -1021,26 +1162,32 @@ def run_fold(
                     result=result,
                 )
             )
-        rows = _dedupe_rows(rows, ("fold", "seed", "sample_id", "lambda_hyb", "alignment_mode"))
-        method_rows = _dedupe_rows(method_rows, ("fold", "seed", "sample_id", "method", "alignment_mode"))
-        alignment_rows = _dedupe_rows(alignment_rows, ("fold", "seed", "sample_id", "lambda_hyb", "window_index", "alignment_mode"))
-        completed.add(sample.sample_id)
+        if sample_alignment_rows and align_cfg.save_alignment_details:
+            _write_alignment_detail_part(
+                fold_results_dir=fold_results_dir,
+                rows=sample_alignment_rows,
+                sample_id=sample.sample_id,
+                alignment_run_key=run_key,
+                fmt=align_cfg.alignment_details_format,
+                overwrite=overwrite,
+            )
+        rows = _dedupe_rows(rows, ("fold", "seed", "sample_id", "lambda_hyb", "alignment_mode", "alignment_run_key"))
+        method_rows = _dedupe_rows(method_rows, ("fold", "seed", "sample_id", "method", "alignment_mode", "alignment_run_key"))
+        completed.add(completed_token)
         if fold_output_dir is not None or resume or skip_completed_samples:
             _atomic_write_csv(fold_sample_metrics_path, rows, RAW_SAMPLE_FIELDS)
             _atomic_write_csv(fold_method_metrics_path, method_rows, RAW_METHOD_FIELDS)
-            _atomic_write_csv(fold_alignment_metrics_path, alignment_rows, WINDOW_ALIGNMENT_FIELDS)
             _atomic_write_csv(fold_results_dir / "raw_waveform_summary_by_lambda.csv", summarize_by_lambda(rows))
             _write_completed(completed_path, completed)
 
     if fold_output_dir is not None or resume or skip_completed_samples:
         _atomic_write_csv(fold_sample_metrics_path, rows, RAW_SAMPLE_FIELDS)
         _atomic_write_csv(fold_method_metrics_path, method_rows, RAW_METHOD_FIELDS)
-        _atomic_write_csv(fold_alignment_metrics_path, alignment_rows, WINDOW_ALIGNMENT_FIELDS)
         _atomic_write_csv(fold_results_dir / "raw_waveform_summary_by_lambda.csv", summarize_by_lambda(rows))
         if errors:
             _atomic_write_csv(fold_results_dir / "raw_waveform_errors.csv", errors)
         _write_completed(completed_path, completed)
-    return rows, method_rows, alignment_rows, errors
+    return rows, method_rows, errors
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1066,8 +1213,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-overlap-ratio", type=float, default=0.8)
     parser.add_argument("--alignment-temperature", type=float, default=0.05)
     parser.add_argument("--overlap-penalty-weight", type=float, default=1.0)
+    parser.add_argument("--alignment-lag-block-size", type=int, default=128)
+    parser.add_argument("--rival-selection-mode", choices=["zero_lag_mse", "shift_robust_neutral"], default="shift_robust_neutral")
+    parser.add_argument("--rival-selection-lambda", type=float, default=0.5)
     parser.add_argument("--save-alignment-details", action="store_true")
     parser.add_argument("--generation-scope", choices=["none", "selected", "all"], default="none")
+    parser.add_argument("--generation-selected-lambdas", default="0.0,0.5,1.0")
+    parser.add_argument("--alignment-details-format", choices=["parquet", "csv"], default="parquet")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cuda")
     parser.add_argument("--context-device", choices=["cpu", "cuda", "auto"], default="cpu")
     parser.add_argument("--prototype-selection", choices=["exact_medoid", "sampled_medoid"], default="exact_medoid")
@@ -1097,6 +1249,7 @@ def main(argv: list[str] | None = None) -> int:
     folds = parse_folds(args.fold, args.folds)
     lambda_grid = parse_lambda_grid(args.lambda_grid)
     generator = _load_raw_generator(args.raw_generator)
+    generation_selected_lambdas = parse_generation_selected_lambdas(args.generation_selected_lambdas)
     alignment_config = ShiftAlignmentConfig(
         alignment_mode=args.alignment_mode,
         shift_max_ms=args.shift_max_ms,
@@ -1109,6 +1262,11 @@ def main(argv: list[str] | None = None) -> int:
         overlap_penalty_weight=args.overlap_penalty_weight,
         save_alignment_details=args.save_alignment_details,
         generation_scope=args.generation_scope,
+        generation_selected_lambdas=generation_selected_lambdas,
+        alignment_lag_block_size=args.alignment_lag_block_size,
+        rival_selection_mode=args.rival_selection_mode,
+        rival_selection_lambda=args.rival_selection_lambda,
+        alignment_details_format=args.alignment_details_format,
     )
 
     output_dir = args.output_dir
@@ -1138,8 +1296,13 @@ def main(argv: list[str] | None = None) -> int:
         "minimum_overlap_ratio": args.minimum_overlap_ratio,
         "alignment_temperature": args.alignment_temperature,
         "overlap_penalty_weight": args.overlap_penalty_weight,
+        "alignment_lag_block_size": args.alignment_lag_block_size,
+        "rival_selection_mode": args.rival_selection_mode,
+        "rival_selection_lambda": args.rival_selection_lambda,
         "save_alignment_details": args.save_alignment_details,
+        "alignment_details_format": args.alignment_details_format,
         "generation_scope": args.generation_scope,
+        "generation_selected_lambdas": list(generation_selected_lambdas),
         "device": args.device,
         "context_device": args.context_device,
         "prototype_selection": args.prototype_selection,
@@ -1154,6 +1317,9 @@ def main(argv: list[str] | None = None) -> int:
         "fold_output_dir": str(args.fold_output_dir) if args.fold_output_dir is not None else "",
         "skip_completed_samples": args.skip_completed_samples,
         "cuda_runtime": "CUDA 13 via cupy-cuda13x when --device cuda is used",
+        "artifact_commit": _git_commit(),
+        "fpde_commit": _fpde_commit(),
+        "fpde_version": _package_version("fpde"),
         "raw_generator": args.raw_generator,
         "input_space": "raw waveform + label",
         "uses_acoustic_features": False,
@@ -1171,7 +1337,6 @@ def main(argv: list[str] | None = None) -> int:
 
     all_rows: list[dict[str, object]] = []
     all_method_rows: list[dict[str, object]] = []
-    all_alignment_rows: list[dict[str, object]] = []
     all_errors: list[dict[str, object]] = []
     for fold in folds:
         fold_dir = None
@@ -1179,7 +1344,7 @@ def main(argv: list[str] | None = None) -> int:
             fold_dir = args.fold_output_dir / f"fold_{fold}"
         elif args.resume or args.skip_completed_samples:
             fold_dir = output_dir / f"fold_{fold}"
-        rows, method_rows, alignment_rows, errors = run_fold(
+        rows, method_rows, errors = run_fold(
             samples,
             fold=fold,
             output_dir=output_dir,
@@ -1208,12 +1373,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         all_rows.extend(rows)
         all_method_rows.extend(method_rows)
-        all_alignment_rows.extend(alignment_rows)
         all_errors.extend(errors)
 
     _atomic_write_csv(results_dir / "raw_waveform_sample_metrics.csv", all_rows, RAW_SAMPLE_FIELDS)
     _atomic_write_csv(results_dir / "raw_waveform_method_metrics.csv", all_method_rows, RAW_METHOD_FIELDS)
-    _atomic_write_csv(results_dir / "window_alignment_metrics.csv", all_alignment_rows, WINDOW_ALIGNMENT_FIELDS)
     _atomic_write_csv(results_dir / "raw_waveform_summary_by_lambda.csv", summarize_by_lambda(all_rows))
     if all_errors:
         _atomic_write_csv(results_dir / "raw_waveform_errors.csv", all_errors)

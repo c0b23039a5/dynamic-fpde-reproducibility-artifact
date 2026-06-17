@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+from scipy.stats import rankdata
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -33,15 +34,14 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(aa, bb) / denom) if denom > 0.0 else 0.0
 
 
-def _rankdata(values: np.ndarray) -> np.ndarray:
-    order = np.argsort(values)
-    ranks = np.empty_like(order, dtype=float)
-    ranks[order] = np.arange(values.shape[0], dtype=float)
-    return ranks
-
-
 def _spearman(a: np.ndarray, b: np.ndarray) -> float:
-    return _pearson(_rankdata(a), _rankdata(b))
+    aa = np.asarray(a, dtype=float)
+    bb = np.asarray(b, dtype=float)
+    if aa.size == 0 or bb.size == 0:
+        return 0.0
+    if np.allclose(aa, aa[0]) or np.allclose(bb, bb[0]):
+        return 1.0 if np.allclose(aa, bb) else 0.0
+    return _pearson(rankdata(aa, method="average"), rankdata(bb, method="average"))
 
 
 def _topk_jaccard(a: np.ndarray, b: np.ndarray, k: int = 10) -> float:
@@ -56,6 +56,29 @@ def _topk_jaccard(a: np.ndarray, b: np.ndarray, k: int = 10) -> float:
 def _zero_padded_shift(waveform: np.ndarray, lag_samples: int) -> tuple[np.ndarray, np.ndarray]:
     mask = np.ones(waveform.shape, dtype=bool)
     return shift_with_mask(waveform, mask, lag_samples)
+
+
+def _mask_windows(mask: np.ndarray, segment_length: int, hop_length: int) -> np.ndarray:
+    windows = []
+    for start in range(0, max(1, mask.shape[0] - segment_length + 1), hop_length):
+        end = start + segment_length
+        chunk = np.zeros(segment_length, dtype=bool)
+        valid = mask[start:min(end, mask.shape[0])]
+        chunk[: valid.shape[0]] = valid
+        windows.append(chunk)
+    return np.asarray(windows, dtype=bool)
+
+
+def _apply_input_mask_to_no_alignment(explanation: object, input_mask: np.ndarray, context: object) -> object:
+    window_masks = _mask_windows(np.asarray(input_mask, dtype=bool), int(context.segment_length), int(context.hop_length))
+    for result in explanation.lambda_results.values():
+        existing = np.asarray(result.get("effective_window_masks", window_masks), dtype=bool)
+        if existing.shape == window_masks.shape:
+            result["effective_window_masks"] = existing & window_masks
+        result["phi"] = np.where(input_mask, np.asarray(result["phi"], dtype=float), 0.0)
+        result.setdefault("details", {})["input_mask_used"] = True
+        result["details"]["constant_spearman_rule"] = "constant arrays return 1.0 if equal, otherwise 0.0"
+    return explanation
 
 
 def _synthetic_waveforms(sample_rate: int) -> tuple[list[np.ndarray], list[str]]:
@@ -90,6 +113,7 @@ def run_sensitivity(output_dir: Path, *, sample_rate: int = 1000) -> Path:
     baseline_phi: dict[tuple[str, int, float], np.ndarray] = {}
     baseline_evidence: dict[tuple[str, int, float], float] = {}
     baseline_window_evidence: dict[tuple[str, int, float], np.ndarray] = {}
+    baseline_rival_label: dict[tuple[str, int, float], object] = {}
     for mode in modes:
         for shift_max_ms in shift_max_values:
             for artificial_shift_ms in shifts_ms:
@@ -106,6 +130,7 @@ def run_sensitivity(output_dir: Path, *, sample_rate: int = 1000) -> Path:
                         top_k_segments=1,
                         device="cpu",
                     )
+                    explanation = _apply_input_mask_to_no_alignment(explanation, shifted_mask, context)
                 else:
                     explanation = explain_shift_robust_raw_waveform(
                         fpde,
@@ -116,6 +141,7 @@ def run_sensitivity(output_dir: Path, *, sample_rate: int = 1000) -> Path:
                         lambda_grid=LAMBDA_GRID,
                         top_k_segments=1,
                         device="cpu",
+                        input_mask=shifted_mask,
                         config=ShiftAlignmentConfig(
                             alignment_mode=mode,
                             shift_max_ms=float(shift_max_ms),
@@ -134,6 +160,7 @@ def run_sensitivity(output_dir: Path, *, sample_rate: int = 1000) -> Path:
                         baseline_phi[key] = phi
                         baseline_evidence[key] = evidence
                         baseline_window_evidence[key] = np.asarray(result["window_evidence"], dtype=float)
+                        baseline_rival_label[key] = explanation.rival_label
                     ref_phi = baseline_phi.get(key, phi)
                     ref_evidence = baseline_evidence.get(key, evidence)
                     ref_window_evidence = baseline_window_evidence.get(key, np.asarray(result["window_evidence"], dtype=float))
@@ -153,8 +180,11 @@ def run_sensitivity(output_dir: Path, *, sample_rate: int = 1000) -> Path:
                             "phi_pearson": _pearson(phi, ref_phi),
                             "phi_spearman": _spearman(phi, ref_phi),
                             "topk_jaccard": _topk_jaccard(phi, ref_phi),
-                            "rival_label_agreement": bool(explanation.rival_label == "class_b"),
+                            "rival_label_agreement": bool(explanation.rival_label == baseline_rival_label.get(key, explanation.rival_label)),
+                            "baseline_rival_label": baseline_rival_label.get(key, explanation.rival_label),
                             "selected_lag_error_ms": selected_lag - artificial_shift_ms,
+                            "selected_lag_expected_ms": artificial_shift_ms,
+                            "selected_lag_sign_convention": "positive artificial input shift expects positive selected target lag",
                             "boundary_hit_rate": details.get("target_boundary_hit_rate", ""),
                             "alignment_confidence": details.get("alignment_confidence_mean", ""),
                             "zero_lag_mse_reference": zero_mse,

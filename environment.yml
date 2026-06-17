@@ -15,7 +15,7 @@ dependencies:
   - umap-learn
   - seaborn
   - pip:
-      - fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic
+      - fpde @ git+https://github.com/fpde-xai/fpde.git@c6bd41c76bb501b2d9322fa36ae900698aaf9337
       - torch
       - torchaudio
       - tqdm

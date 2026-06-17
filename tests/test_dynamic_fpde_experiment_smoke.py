@@ -17,7 +17,7 @@ from experiments.dynamic_fpde_audio.datasets import read_esc50_metadata
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_project_installs_fpde_from_dynamic_branch():
+def test_project_installs_fpde_from_pinned_commit_sha():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["name"] == "dynamic-fpde-reproducibility-artifact"
     assert (
@@ -25,14 +25,15 @@ def test_project_installs_fpde_from_dynamic_branch():
         == "Reproducible Dynamic-FPDE experiments for time-resolved prototype-directional audio explanations."
     )
     deps = pyproject["project"]["dependencies"]
-    assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in deps
+    pinned = "fpde @ git+https://github.com/fpde-xai/fpde.git@c6bd41c76bb501b2d9322fa36ae900698aaf9337"
+    assert pinned in deps
     assert "soundfile" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
     assert "matplotlib" in pyproject["project"]["optional-dependencies"]["plot"]
     assert "openml" not in pyproject["project"]["optional-dependencies"]
     assert "baselines" not in pyproject["project"]["optional-dependencies"]
     assert pyproject["tool"]["setuptools"]["packages"]["find"]["include"] == ["experiments*"]
-    assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    assert "fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic" in (ROOT / "environment.yml").read_text(encoding="utf-8")
+    assert pinned in (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert pinned in (ROOT / "environment.yml").read_text(encoding="utf-8")
 
 
 def test_cli_accepts_comma_separated_folds():

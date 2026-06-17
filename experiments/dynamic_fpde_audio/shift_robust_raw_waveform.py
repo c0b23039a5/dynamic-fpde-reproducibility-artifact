@@ -1,13 +1,13 @@
 """Shift-robust Raw-Waveform Dynamic-FPDE helpers.
 
-This module implements bounded, non-circular lag alignment for the artifact's
-raw-waveform runner.  The legacy no-alignment path remains delegated to the
-installed ``fpde`` package by the runner.
+The implementation keeps raw samples as the explanation domain and supports a
+real NumPy/CuPy backend boundary for bounded local lag alignment.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -17,6 +17,17 @@ from experiments.dynamic_fpde_audio.raw_waveform_context import _as_raw_waveform
 
 LAMBDA_GRID = tuple(i / 10.0 for i in range(11))
 EPS = 1e-12
+
+
+@dataclass(frozen=True)
+class ArrayBackend:
+    name: str
+    xp: Any
+    is_cuda: bool
+    cuda_device_name: str = ""
+    cupy_version: str = ""
+    cuda_runtime_version: str = ""
+    backend_fallback_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,6 +43,34 @@ class ShiftAlignmentConfig:
     overlap_penalty_weight: float = 1.0
     save_alignment_details: bool = False
     generation_scope: str = "none"
+    generation_selected_lambdas: tuple[float, ...] = (0.0, 0.5, 1.0)
+    alignment_lag_block_size: int = 128
+    rival_selection_mode: str = "shift_robust_neutral"
+    rival_selection_lambda: float = 0.5
+    alignment_details_format: str = "parquet"
+
+
+@dataclass(frozen=True)
+class PrecomputedLagMetrics:
+    lags_samples: Any
+    shifted_prototypes: Any
+    shifted_masks: Any
+    mse: Any
+    cosine_distance: Any
+    overlap_ratio: Any
+
+
+@dataclass(frozen=True)
+class LambdaAlignmentBatch:
+    lambda_grid: Any
+    costs: Any
+    weights: Any
+    best_indices: Any
+    entropy: Any
+    confidence: Any
+    valid: Any
+    fallback_used: Any
+    fallback_reason: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -47,6 +86,8 @@ class ShiftAlignmentResult:
     entropy: float
     confidence: float
     valid: bool
+    fallback_used: bool = False
+    fallback_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -57,7 +98,43 @@ class ShiftRobustWindowExplanation:
     evidence_by_lambda: dict[float, float]
     target_alignment_by_lambda: dict[float, ShiftAlignmentResult]
     rival_alignment_by_lambda: dict[float, ShiftAlignmentResult]
+    effective_mask_by_lambda: dict[float, np.ndarray]
     mask: np.ndarray
+    timings: dict[str, float]
+
+
+def resolve_backend(device: str) -> ArrayBackend:
+    if device == "cpu":
+        return ArrayBackend(name="numpy_cpu", xp=np, is_cuda=False)
+    if device not in {"cuda", "auto"}:
+        raise ValueError("device must be cpu, cuda, or auto")
+    try:
+        import cupy as cp  # type: ignore[import-not-found]
+
+        cp.cuda.runtime.getDeviceCount()
+        device_id = cp.cuda.runtime.getDevice()
+        props = cp.cuda.runtime.getDeviceProperties(device_id)
+        raw_name = props.get("name", b"") if isinstance(props, dict) else b""
+        if isinstance(raw_name, bytes):
+            cuda_device_name = raw_name.decode("utf-8", errors="replace")
+        else:
+            cuda_device_name = str(raw_name)
+        return ArrayBackend(
+            name="cupy_cuda",
+            xp=cp,
+            is_cuda=True,
+            cuda_device_name=cuda_device_name,
+            cupy_version=getattr(cp, "__version__", ""),
+            cuda_runtime_version=str(cp.cuda.runtime.runtimeGetVersion()),
+        )
+    except Exception as exc:
+        if device == "cuda":
+            raise RuntimeError("CUDA/CuPy backend requested but unavailable") from exc
+        return ArrayBackend(name="numpy_cpu", xp=np, is_cuda=False, backend_fallback_used=True)
+
+
+def asnumpy(value: Any, backend: ArrayBackend) -> np.ndarray:
+    return backend.xp.asnumpy(value) if backend.is_cuda else np.asarray(value)
 
 
 def validate_alignment_config(config: ShiftAlignmentConfig) -> ShiftAlignmentConfig:
@@ -65,7 +142,11 @@ def validate_alignment_config(config: ShiftAlignmentConfig) -> ShiftAlignmentCon
         raise ValueError("alignment_mode must be none, hard_bounded, or soft_bounded")
     if config.generation_scope not in {"none", "selected", "all"}:
         raise ValueError("generation_scope must be none, selected, or all")
-    for name in ("shift_max_ms", "coarse_step_ms", "fine_radius_ms", "minimum_overlap_ratio"):
+    if config.rival_selection_mode not in {"zero_lag_mse", "shift_robust_neutral"}:
+        raise ValueError("rival_selection_mode must be zero_lag_mse or shift_robust_neutral")
+    if config.alignment_details_format not in {"parquet", "csv"}:
+        raise ValueError("alignment_details_format must be parquet or csv")
+    for name in ("shift_max_ms", "coarse_step_ms", "fine_radius_ms", "minimum_overlap_ratio", "rival_selection_lambda"):
         value = float(getattr(config, name))
         if not np.isfinite(value) or value < 0.0:
             raise ValueError(f"{name} must be finite and non-negative")
@@ -75,8 +156,12 @@ def validate_alignment_config(config: ShiftAlignmentConfig) -> ShiftAlignmentCon
         raise ValueError("fine_step_samples must be positive")
     if int(config.coarse_top_k) <= 0:
         raise ValueError("coarse_top_k must be positive")
+    if int(config.alignment_lag_block_size) <= 0:
+        raise ValueError("alignment_lag_block_size must be positive")
     if not (0.0 <= float(config.minimum_overlap_ratio) <= 1.0):
         raise ValueError("minimum_overlap_ratio must be in [0, 1]")
+    if not (0.0 <= float(config.rival_selection_lambda) <= 1.0):
+        raise ValueError("rival_selection_lambda must be in [0, 1]")
     if config.alignment_mode == "soft_bounded" and float(config.alignment_temperature) <= 0.0:
         raise ValueError("alignment_temperature must be positive for soft_bounded")
     if not np.isfinite(float(config.overlap_penalty_weight)) or float(config.overlap_penalty_weight) < 0.0:
@@ -105,6 +190,80 @@ def shift_with_mask(waveform: np.ndarray, mask: np.ndarray, lag_samples: int) ->
     return shifted, shifted_mask
 
 
+def build_shifted_batch(
+    prototype: Any,
+    prototype_mask: Any,
+    lags: Any,
+    *,
+    backend: ArrayBackend,
+) -> tuple[Any, Any]:
+    xp = backend.xp
+    p = xp.asarray(prototype, dtype=float)
+    pm = xp.asarray(prototype_mask, dtype=bool)
+    lag_arr = xp.asarray(lags, dtype=xp.int64)
+    length = int(p.shape[0])
+    positions = xp.arange(length, dtype=xp.int64)[None, :]
+    source = positions - lag_arr[:, None]
+    in_range = (source >= 0) & (source < length)
+    source = xp.clip(source, 0, max(0, length - 1))
+    shifted = xp.where(in_range, p[source], 0.0)
+    shifted_mask = xp.where(in_range, pm[source], False)
+    return shifted, shifted_mask
+
+
+def precompute_lag_metrics(
+    window: Any,
+    window_mask: Any,
+    prototype: Any,
+    prototype_mask: Any,
+    lags: Any,
+    *,
+    backend: ArrayBackend,
+    lag_block_size: int = 128,
+) -> PrecomputedLagMetrics:
+    xp = backend.xp
+    lag_arr = xp.asarray(lags, dtype=xp.int64)
+    w = xp.asarray(window, dtype=float)
+    wm = xp.asarray(window_mask, dtype=bool)
+    shifted_parts = []
+    mask_parts = []
+    mse_parts = []
+    cosine_parts = []
+    overlap_parts = []
+    for start in range(0, int(lag_arr.shape[0]), int(lag_block_size)):
+        block_lags = lag_arr[start : start + int(lag_block_size)]
+        shifted, shifted_mask = build_shifted_batch(prototype, prototype_mask, block_lags, backend=backend)
+        valid = wm[None, :] & shifted_mask
+        valid_f = valid.astype(float)
+        valid_count = xp.sum(valid_f, axis=1)
+        overlap = valid_count / float(w.shape[0])
+        diff = xp.where(valid, w[None, :] - shifted, 0.0)
+        mse = xp.sum(diff * diff, axis=1) / xp.maximum(valid_count, 1.0)
+        mse = xp.where(valid_count > 0, mse, xp.inf)
+        dot = xp.sum(xp.where(valid, w[None, :] * shifted, 0.0), axis=1)
+        w_norm = xp.sqrt(xp.sum(xp.where(valid, w[None, :] * w[None, :], 0.0), axis=1))
+        p_norm = xp.sqrt(xp.sum(xp.where(valid, shifted * shifted, 0.0), axis=1))
+        both_zero = (w_norm <= EPS) & (p_norm <= EPS) & (valid_count > 0)
+        one_zero = ((w_norm <= EPS) ^ (p_norm <= EPS)) & (valid_count > 0)
+        cos = dot / (w_norm * p_norm + EPS)
+        cos = xp.clip(cos, -1.0, 1.0)
+        cos = xp.where(both_zero, 1.0, xp.where(one_zero, 0.0, cos))
+        cosine_distance = xp.where(valid_count > 0, (1.0 - cos) / 2.0, xp.inf)
+        shifted_parts.append(shifted)
+        mask_parts.append(shifted_mask)
+        mse_parts.append(mse)
+        cosine_parts.append(cosine_distance)
+        overlap_parts.append(overlap)
+    return PrecomputedLagMetrics(
+        lags_samples=lag_arr,
+        shifted_prototypes=xp.concatenate(shifted_parts, axis=0),
+        shifted_masks=xp.concatenate(mask_parts, axis=0),
+        mse=xp.concatenate(mse_parts, axis=0),
+        cosine_distance=xp.concatenate(cosine_parts, axis=0),
+        overlap_ratio=xp.concatenate(overlap_parts, axis=0),
+    )
+
+
 def masked_shift_mse(
     window: np.ndarray,
     window_mask: np.ndarray,
@@ -112,18 +271,12 @@ def masked_shift_mse(
     prototype_mask: np.ndarray,
     lag_samples: int,
 ) -> tuple[float, float]:
-    w = np.asarray(window, dtype=float)
-    wm = np.asarray(window_mask, dtype=bool)
-    p = np.asarray(prototype, dtype=float)
-    pm = np.asarray(prototype_mask, dtype=bool)
-    if w.shape != wm.shape or w.shape != p.shape or p.shape != pm.shape:
-        raise ValueError("window, prototype, and masks must share shape")
-    shifted, shifted_mask = shift_with_mask(p, pm, lag_samples)
-    valid = wm & shifted_mask
-    overlap_ratio = float(np.count_nonzero(valid) / max(1, w.shape[0]))
+    shifted, shifted_mask = shift_with_mask(prototype, prototype_mask, lag_samples)
+    valid = np.asarray(window_mask, dtype=bool) & shifted_mask
+    overlap_ratio = float(np.count_nonzero(valid) / max(1, np.asarray(window).shape[0]))
     if not np.any(valid):
         return float("inf"), overlap_ratio
-    diff = w[valid] - shifted[valid]
+    diff = np.asarray(window, dtype=float)[valid] - shifted[valid]
     return float(np.mean(diff * diff)), overlap_ratio
 
 
@@ -135,18 +288,12 @@ def masked_shift_cosine(
     lag_samples: int,
     eps: float = EPS,
 ) -> tuple[float, float]:
-    w = np.asarray(window, dtype=float)
-    wm = np.asarray(window_mask, dtype=bool)
-    p = np.asarray(prototype, dtype=float)
-    pm = np.asarray(prototype_mask, dtype=bool)
-    if w.shape != wm.shape or w.shape != p.shape or p.shape != pm.shape:
-        raise ValueError("window, prototype, and masks must share shape")
-    shifted, shifted_mask = shift_with_mask(p, pm, lag_samples)
-    valid = wm & shifted_mask
-    overlap_ratio = float(np.count_nonzero(valid) / max(1, w.shape[0]))
+    shifted, shifted_mask = shift_with_mask(prototype, prototype_mask, lag_samples)
+    valid = np.asarray(window_mask, dtype=bool) & shifted_mask
+    overlap_ratio = float(np.count_nonzero(valid) / max(1, np.asarray(window).shape[0]))
     if not np.any(valid):
         return 1.0, overlap_ratio
-    wv = w[valid]
+    wv = np.asarray(window, dtype=float)[valid]
     pv = shifted[valid]
     w_norm = float(np.linalg.norm(wv))
     p_norm = float(np.linalg.norm(pv))
@@ -156,9 +303,7 @@ def masked_shift_cosine(
         cos = 0.0
     else:
         cos = float(np.dot(wv, pv) / ((w_norm * p_norm) + eps))
-    cos = float(np.clip(cos, -1.0, 1.0))
-    dist = (1.0 - cos) / 2.0
-    return float(dist if np.isfinite(dist) else 1.0), overlap_ratio
+    return float((1.0 - np.clip(cos, -1.0, 1.0)) / 2.0), overlap_ratio
 
 
 def generate_coarse_lags(sample_rate: int, shift_max_ms: float, coarse_step_ms: float) -> np.ndarray:
@@ -172,96 +317,233 @@ def generate_coarse_lags(sample_rate: int, shift_max_ms: float, coarse_step_ms: 
     return np.asarray(sorted(set(int(v) for v in values)), dtype=np.intp)
 
 
-def _fine_lags(
+def _cost_matrix(
+    metrics: PrecomputedLagMetrics,
+    lambda_grid: Any,
+    config: ShiftAlignmentConfig,
+    backend: ArrayBackend,
+    *,
+    enforce_minimum_overlap: bool = True,
+) -> Any:
+    xp = backend.xp
+    lambdas = xp.asarray(lambda_grid, dtype=float)[:, None]
+    mse = metrics.mse[None, :]
+    cosine = metrics.cosine_distance[None, :]
+    overlap = metrics.overlap_ratio[None, :]
+    finite_mse = metrics.mse[xp.isfinite(metrics.mse)]
+    if int(finite_mse.shape[0]) == 0:
+        mse_scale = xp.asarray(1.0)
+    else:
+        mse_scale = xp.median(finite_mse)
+        mse_scale = xp.where((~xp.isfinite(mse_scale)) | (mse_scale <= EPS), 1.0, mse_scale)
+    mse_term = xp.where(lambdas == 0.0, 0.0, mse / (mse_scale + EPS))
+    cos_term = xp.where(lambdas == 1.0, 0.0, cosine)
+    cost = lambdas * mse_term + (1.0 - lambdas) * cos_term + float(config.overlap_penalty_weight) * (1.0 - overlap)
+    invalid = (~xp.isfinite(mse)) | (~xp.isfinite(cosine))
+    if enforce_minimum_overlap:
+        invalid = invalid | (overlap < float(config.minimum_overlap_ratio))
+    return xp.where(invalid, xp.inf, cost)
+
+
+def _fine_lags_from_costs(
     coarse_lags: np.ndarray,
-    coarse_cost: np.ndarray,
+    coarse_costs: np.ndarray,
     *,
     sample_rate: int,
-    shift_max_ms: float,
-    fine_radius_ms: float,
-    fine_step_samples: int,
-    coarse_top_k: int,
+    config: ShiftAlignmentConfig,
 ) -> np.ndarray:
-    finite_idx = np.flatnonzero(np.isfinite(coarse_cost))
-    if finite_idx.size == 0:
-        centers = np.array([0], dtype=np.intp)
-    else:
-        order = sorted(
-            finite_idx.tolist(),
-            key=lambda i: (float(coarse_cost[i]), abs(int(coarse_lags[i])), int(coarse_lags[i])),
-        )
-        centers = coarse_lags[order[: int(coarse_top_k)]]
-    shift_max_samples = int(round(int(sample_rate) * float(shift_max_ms) / 1000.0))
-    radius = int(round(int(sample_rate) * float(fine_radius_ms) / 1000.0))
-    step = max(1, int(fine_step_samples))
-    values: set[int] = set()
-    for center in centers.tolist():
-        values.update(range(int(center) - radius, int(center) + radius + 1, step))
-    values.update([-shift_max_samples, 0, shift_max_samples])
+    shift_max_samples = int(round(int(sample_rate) * float(config.shift_max_ms) / 1000.0))
+    radius = int(round(int(sample_rate) * float(config.fine_radius_ms) / 1000.0))
+    step = max(1, int(config.fine_step_samples))
+    values: set[int] = {-shift_max_samples, 0, shift_max_samples}
+    for row in coarse_costs:
+        finite_idx = np.flatnonzero(np.isfinite(row))
+        if finite_idx.size == 0:
+            centers = np.asarray([0], dtype=np.intp)
+        else:
+            order = sorted(finite_idx.tolist(), key=lambda i: (float(row[i]), abs(int(coarse_lags[i])), int(coarse_lags[i])))
+            centers = coarse_lags[order[: int(config.coarse_top_k)]]
+        for center in centers.tolist():
+            values.update(range(int(center) - radius, int(center) + radius + 1, step))
     return np.asarray(sorted(v for v in values if -shift_max_samples <= v <= shift_max_samples), dtype=np.intp)
 
 
-def _precompute_shift_metrics(
-    window: np.ndarray,
-    window_mask: np.ndarray,
-    prototype: np.ndarray,
-    prototype_mask: np.ndarray,
-    lags: np.ndarray,
+def _hard_best_index(cost_row: np.ndarray, lags: np.ndarray) -> int:
+    finite_idx = np.flatnonzero(np.isfinite(cost_row))
+    if finite_idx.size == 0:
+        return -1
+    return int(min(finite_idx.tolist(), key=lambda i: (float(cost_row[i]), abs(int(lags[i])), int(lags[i]))))
+
+
+def _alignment_batch(
+    metrics: PrecomputedLagMetrics,
+    lambda_grid: Sequence[float],
     *,
-    minimum_overlap_ratio: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    mse = np.empty(lags.shape[0], dtype=float)
-    cosine = np.empty(lags.shape[0], dtype=float)
-    overlap = np.empty(lags.shape[0], dtype=float)
-    for i, lag in enumerate(lags.tolist()):
-        mse_value, overlap_ratio = masked_shift_mse(window, window_mask, prototype, prototype_mask, int(lag))
-        cos_value, _ = masked_shift_cosine(window, window_mask, prototype, prototype_mask, int(lag))
-        if overlap_ratio < float(minimum_overlap_ratio):
-            mse_value = float("inf")
-            cos_value = float("inf")
-        mse[i] = mse_value
-        cosine[i] = cos_value
-        overlap[i] = overlap_ratio
-    return mse, cosine, overlap
-
-
-def _alignment_cost(mse: np.ndarray, cosine: np.ndarray, overlap: np.ndarray, lambda_hyb: float, penalty_weight: float) -> np.ndarray:
-    finite_mse = mse[np.isfinite(mse)]
-    scale = float(np.median(finite_mse)) if finite_mse.size else 1.0
-    if not np.isfinite(scale) or scale <= EPS:
-        scale = 1.0
-    lambda_value = float(lambda_hyb)
-    mse_term = np.zeros_like(mse, dtype=float) if lambda_value == 0.0 else mse / (scale + EPS)
-    cos_term = np.zeros_like(cosine, dtype=float) if lambda_value == 1.0 else cosine
-    cost = lambda_value * mse_term
-    cost = cost + (1.0 - lambda_value) * cos_term
-    cost = cost + float(penalty_weight) * (1.0 - overlap)
-    cost[~np.isfinite(mse) | ~np.isfinite(cosine)] = np.inf
-    return cost
-
-
-def _weights_from_cost(cost: np.ndarray, mode: str, temperature: float) -> tuple[np.ndarray, float, float]:
-    weights = np.zeros_like(cost, dtype=float)
-    valid_idx = np.flatnonzero(np.isfinite(cost))
-    if valid_idx.size == 0:
-        return weights, 0.0, 0.0
-    if mode == "hard_bounded" or valid_idx.size == 1:
-        best = min(valid_idx.tolist(), key=lambda i: (float(cost[i]), i))
-        weights[best] = 1.0
-    else:
-        stable = -cost[valid_idx] / float(temperature)
+    config: ShiftAlignmentConfig,
+    backend: ArrayBackend,
+    lag0_metrics: PrecomputedLagMetrics | None = None,
+) -> LambdaAlignmentBatch:
+    xp = backend.xp
+    costs = _cost_matrix(metrics, lambda_grid, config, backend)
+    costs_np = asnumpy(costs, backend)
+    lags_np = asnumpy(metrics.lags_samples, backend).astype(int, copy=False)
+    weights_np = np.zeros_like(costs_np, dtype=float)
+    best_indices = np.full(costs_np.shape[0], -1, dtype=np.intp)
+    entropy = np.zeros(costs_np.shape[0], dtype=float)
+    confidence = np.zeros(costs_np.shape[0], dtype=float)
+    valid = np.zeros(costs_np.shape[0], dtype=bool)
+    fallback_used = np.zeros(costs_np.shape[0], dtype=bool)
+    fallback_reason = [""] * costs_np.shape[0]
+    lag0_index = int(np.where(lags_np == 0)[0][0]) if np.any(lags_np == 0) else -1
+    lag0_costs_np = None
+    lag0_overlap_np = None
+    if lag0_metrics is not None:
+        lag0_costs_np = asnumpy(_cost_matrix(lag0_metrics, lambda_grid, config, backend, enforce_minimum_overlap=False), backend)[:, 0]
+        lag0_overlap_np = asnumpy(lag0_metrics.overlap_ratio, backend)[0]
+    for row_idx, row in enumerate(costs_np):
+        finite_idx = np.flatnonzero(np.isfinite(row))
+        if finite_idx.size == 0:
+            fallback_used[row_idx] = True
+            fallback_reason[row_idx] = "minimum_overlap_not_met"
+            if lag0_index >= 0 and lag0_overlap_np is not None and lag0_overlap_np > 0.0:
+                weights_np[row_idx, lag0_index] = 1.0
+                best_indices[row_idx] = lag0_index
+                costs_np[row_idx, lag0_index] = float(lag0_costs_np[row_idx])
+            continue
+        valid[row_idx] = True
+        if config.alignment_mode == "hard_bounded" or finite_idx.size == 1:
+            best = _hard_best_index(row, lags_np)
+            weights_np[row_idx, best] = 1.0
+            best_indices[row_idx] = best
+            confidence[row_idx] = 1.0
+            continue
+        stable = -row[finite_idx] / float(config.alignment_temperature)
         stable = stable - float(np.max(stable))
         exp_values = np.exp(stable)
         total = float(np.sum(exp_values))
         if not np.isfinite(total) or total <= 0.0:
-            best = min(valid_idx.tolist(), key=lambda i: (float(cost[i]), i))
-            weights[best] = 1.0
+            best = _hard_best_index(row, lags_np)
+            weights_np[row_idx, best] = 1.0
+            best_indices[row_idx] = best
+            confidence[row_idx] = 1.0
+            continue
+        weights_np[row_idx, finite_idx] = exp_values / total
+        best_indices[row_idx] = _hard_best_index(row, lags_np)
+        nonzero = weights_np[row_idx, weights_np[row_idx] > 0.0]
+        entropy[row_idx] = float(-np.sum(nonzero * np.log(nonzero + EPS)))
+        confidence[row_idx] = 1.0 if nonzero.size <= 1 else float(np.clip(1.0 - entropy[row_idx] / np.log(nonzero.size), 0.0, 1.0))
+    return LambdaAlignmentBatch(
+        lambda_grid=xp.asarray(lambda_grid, dtype=float),
+        costs=xp.asarray(costs_np, dtype=float),
+        weights=xp.asarray(weights_np, dtype=float),
+        best_indices=xp.asarray(best_indices, dtype=xp.int64),
+        entropy=xp.asarray(entropy, dtype=float),
+        confidence=xp.asarray(confidence, dtype=float),
+        valid=xp.asarray(valid, dtype=bool),
+        fallback_used=xp.asarray(fallback_used, dtype=bool),
+        fallback_reason=tuple(fallback_reason),
+    )
+
+
+def precompute_alignment_for_lambdas(
+    window: Any,
+    window_mask: Any,
+    prototype: Any,
+    prototype_mask: Any,
+    *,
+    sample_rate: int,
+    lambda_grid: Sequence[float],
+    config: ShiftAlignmentConfig,
+    backend: ArrayBackend,
+) -> tuple[PrecomputedLagMetrics, LambdaAlignmentBatch, dict[str, float]]:
+    timings: dict[str, float] = {}
+    start = perf_counter()
+    coarse_lags = generate_coarse_lags(sample_rate, config.shift_max_ms, config.coarse_step_ms)
+    timings["lag_batch_build_runtime_sec"] = perf_counter() - start
+    start = perf_counter()
+    coarse_metrics = precompute_lag_metrics(
+        window,
+        window_mask,
+        prototype,
+        prototype_mask,
+        coarse_lags,
+        backend=backend,
+        lag_block_size=config.alignment_lag_block_size,
+    )
+    timings["coarse_metric_runtime_sec"] = perf_counter() - start
+    start = perf_counter()
+    coarse_costs = _cost_matrix(coarse_metrics, lambda_grid, config, backend)
+    timings["lambda_cost_runtime_sec"] = perf_counter() - start
+    fine_lags = _fine_lags_from_costs(asnumpy(coarse_metrics.lags_samples, backend).astype(int), asnumpy(coarse_costs, backend), sample_rate=sample_rate, config=config)
+    start = perf_counter()
+    fine_metrics = precompute_lag_metrics(
+        window,
+        window_mask,
+        prototype,
+        prototype_mask,
+        fine_lags,
+        backend=backend,
+        lag_block_size=config.alignment_lag_block_size,
+    )
+    fine_costs = _cost_matrix(fine_metrics, lambda_grid, config, backend)
+    needs_lag0_fallback = bool(np.any(np.all(~np.isfinite(asnumpy(fine_costs, backend)), axis=1)))
+    lag0_metrics = (
+        precompute_lag_metrics(
+            window,
+            window_mask,
+            prototype,
+            prototype_mask,
+            np.asarray([0], dtype=np.intp),
+            backend=backend,
+            lag_block_size=1,
+        )
+        if needs_lag0_fallback
+        else None
+    )
+    timings["fine_metric_runtime_sec"] = perf_counter() - start
+    start = perf_counter()
+    batch = _alignment_batch(fine_metrics, lambda_grid, config=config, backend=backend, lag0_metrics=lag0_metrics)
+    timings["alignment_weight_runtime_sec"] = perf_counter() - start
+    return fine_metrics, batch, timings
+
+
+def _alignment_results(metrics: PrecomputedLagMetrics, batch: LambdaAlignmentBatch, sample_rate: int, backend: ArrayBackend) -> dict[float, ShiftAlignmentResult]:
+    lags = asnumpy(metrics.lags_samples, backend).astype(int)
+    costs = asnumpy(batch.costs, backend)
+    weights = asnumpy(batch.weights, backend)
+    best_indices = asnumpy(batch.best_indices, backend).astype(int)
+    entropy = asnumpy(batch.entropy, backend)
+    confidence = asnumpy(batch.confidence, backend)
+    valid = asnumpy(batch.valid, backend).astype(bool)
+    fallback_used = asnumpy(batch.fallback_used, backend).astype(bool)
+    overlap = asnumpy(metrics.overlap_ratio, backend)
+    out: dict[float, ShiftAlignmentResult] = {}
+    for row_idx, lambda_value in enumerate(asnumpy(batch.lambda_grid, backend).astype(float).tolist()):
+        best = int(best_indices[row_idx])
+        if best >= 0:
+            best_lag = int(lags[best])
+            best_cost = float(costs[row_idx, best])
+            best_overlap = float(overlap[best])
         else:
-            weights[valid_idx] = exp_values / total
-    nonzero = weights[weights > 0.0]
-    entropy = float(-np.sum(nonzero * np.log(nonzero + EPS))) if nonzero.size else 0.0
-    confidence = 1.0 if nonzero.size <= 1 else float(1.0 - entropy / np.log(nonzero.size))
-    return weights, entropy, float(np.clip(confidence, 0.0, 1.0))
+            best_lag = 0
+            best_cost = float("inf")
+            best_overlap = 0.0
+        out[float(lambda_value)] = ShiftAlignmentResult(
+            candidate_lags_samples=lags.copy(),
+            candidate_lags_ms=lags.astype(float) * 1000.0 / float(sample_rate),
+            costs=costs[row_idx].astype(float, copy=True),
+            weights=weights[row_idx].astype(float, copy=True),
+            best_lag_samples=best_lag,
+            best_lag_ms=float(best_lag) * 1000.0 / float(sample_rate),
+            best_cost=best_cost,
+            overlap_ratio=best_overlap,
+            entropy=float(entropy[row_idx]),
+            confidence=float(confidence[row_idx]),
+            valid=bool(valid[row_idx]),
+            fallback_used=bool(fallback_used[row_idx]),
+            fallback_reason=batch.fallback_reason[row_idx],
+        )
+    return out
 
 
 def align_prototype_to_window(
@@ -273,131 +555,49 @@ def align_prototype_to_window(
     sample_rate: int,
     lambda_hyb: float,
     config: ShiftAlignmentConfig,
+    backend: ArrayBackend | None = None,
 ) -> ShiftAlignmentResult:
-    cfg = validate_alignment_config(config)
-    coarse_lags = generate_coarse_lags(sample_rate, cfg.shift_max_ms, cfg.coarse_step_ms)
-    coarse_mse, coarse_cos, coarse_overlap = _precompute_shift_metrics(
+    resolved = backend or resolve_backend("cpu")
+    metrics, batch, _ = precompute_alignment_for_lambdas(
         window,
         window_mask,
         prototype,
         prototype_mask,
-        coarse_lags,
-        minimum_overlap_ratio=cfg.minimum_overlap_ratio,
-    )
-    coarse_cost = _alignment_cost(coarse_mse, coarse_cos, coarse_overlap, lambda_hyb, cfg.overlap_penalty_weight)
-    fine = _fine_lags(
-        coarse_lags,
-        coarse_cost,
         sample_rate=sample_rate,
-        shift_max_ms=cfg.shift_max_ms,
-        fine_radius_ms=cfg.fine_radius_ms,
-        fine_step_samples=cfg.fine_step_samples,
-        coarse_top_k=cfg.coarse_top_k,
+        lambda_grid=(float(lambda_hyb),),
+        config=config,
+        backend=resolved,
     )
-    mse, cosine, overlap = _precompute_shift_metrics(
-        window,
-        window_mask,
-        prototype,
-        prototype_mask,
-        fine,
-        minimum_overlap_ratio=cfg.minimum_overlap_ratio,
-    )
-    cost = _alignment_cost(mse, cosine, overlap, lambda_hyb, cfg.overlap_penalty_weight)
-    weights, entropy, confidence = _weights_from_cost(cost, cfg.alignment_mode, cfg.alignment_temperature)
-    valid = bool(np.any(weights > 0.0))
-    if not valid:
-        zero_idx = np.where(fine == 0)[0]
-        if zero_idx.size:
-            zero_overlap = masked_shift_mse(window, window_mask, prototype, prototype_mask, 0)[1]
-            if zero_overlap > 0.0:
-                weights[zero_idx[0]] = 1.0
-                cost[zero_idx[0]] = 0.0
-                overlap[zero_idx[0]] = zero_overlap
-        valid = bool(np.any(weights > 0.0))
-    if valid:
-        best_idx = min(
-            np.flatnonzero(weights > 0.0).tolist() if cfg.alignment_mode == "hard_bounded" else np.flatnonzero(np.isfinite(cost)).tolist(),
-            key=lambda i: (float(cost[i]), abs(int(fine[i])), int(fine[i])),
-        )
-        best_lag = int(fine[best_idx])
-        best_cost = float(cost[best_idx]) if np.isfinite(cost[best_idx]) else float("inf")
-        best_overlap = float(overlap[best_idx])
-    else:
-        best_lag = 0
-        best_cost = float("inf")
-        best_overlap = 0.0
-    return ShiftAlignmentResult(
-        candidate_lags_samples=fine.astype(np.intp, copy=True),
-        candidate_lags_ms=fine.astype(float) * 1000.0 / float(sample_rate),
-        costs=cost.astype(float, copy=True),
-        weights=weights.astype(float, copy=True),
-        best_lag_samples=best_lag,
-        best_lag_ms=float(best_lag) * 1000.0 / float(sample_rate),
-        best_cost=best_cost,
-        overlap_ratio=best_overlap,
-        entropy=float(entropy),
-        confidence=float(confidence if valid else 0.0),
-        valid=valid,
-    )
+    return _alignment_results(metrics, batch, sample_rate, resolved)[float(lambda_hyb)]
 
 
-def _weighted_shifted(prototype: np.ndarray, mask: np.ndarray, alignment: ShiftAlignmentResult) -> list[tuple[float, np.ndarray, np.ndarray]]:
-    out: list[tuple[float, np.ndarray, np.ndarray]] = []
-    for weight, lag in zip(alignment.weights.tolist(), alignment.candidate_lags_samples.tolist(), strict=True):
-        if weight <= 0.0:
-            continue
-        shifted, shifted_mask = shift_with_mask(prototype, mask, int(lag))
-        out.append((float(weight), shifted, shifted_mask))
-    return out
+def _weighted_squared_error_backend(window: Any, window_mask: Any, metrics: PrecomputedLagMetrics, weights: Any, backend: ArrayBackend) -> tuple[Any, Any]:
+    xp = backend.xp
+    valid = xp.asarray(window_mask, dtype=bool)[None, :] & metrics.shifted_masks
+    valid_f = valid.astype(float)
+    weighted_valid = weights[:, None] * valid_f
+    den = xp.sum(weighted_valid, axis=0)
+    diff = xp.where(valid, xp.asarray(window, dtype=float)[None, :] - metrics.shifted_prototypes, 0.0)
+    num = xp.sum(weights[:, None] * diff * diff * valid_f, axis=0)
+    out = xp.where(den > 0, num / xp.maximum(den, EPS), 0.0)
+    return out, den > 0
 
 
-def _weighted_squared_error(
-    window: np.ndarray,
-    window_mask: np.ndarray,
-    prototype: np.ndarray,
-    prototype_mask: np.ndarray,
-    alignment: ShiftAlignmentResult,
-) -> np.ndarray:
-    num = np.zeros_like(window, dtype=float)
-    den = np.zeros_like(window, dtype=float)
-    for weight, shifted, shifted_mask in _weighted_shifted(prototype, prototype_mask, alignment):
-        valid = window_mask & shifted_mask
-        values = np.zeros_like(window, dtype=float)
-        values[valid] = (window[valid] - shifted[valid]) ** 2
-        num[valid] += weight * values[valid]
-        den[valid] += weight
-    out = np.zeros_like(window, dtype=float)
-    valid_den = den > 0.0
-    out[valid_den] = num[valid_den] / den[valid_den]
-    return out
-
-
-def _weighted_cos_contribution(
-    window: np.ndarray,
-    window_mask: np.ndarray,
-    prototype: np.ndarray,
-    prototype_mask: np.ndarray,
-    alignment: ShiftAlignmentResult,
-) -> np.ndarray:
-    num = np.zeros_like(window, dtype=float)
-    den = np.zeros_like(window, dtype=float)
-    for weight, shifted, shifted_mask in _weighted_shifted(prototype, prototype_mask, alignment):
-        valid = window_mask & shifted_mask
-        if not np.any(valid):
-            continue
-        w_norm = float(np.linalg.norm(window[valid]))
-        p_norm = float(np.linalg.norm(shifted[valid]))
-        contrib = np.zeros_like(window, dtype=float)
-        if w_norm > EPS and p_norm > EPS:
-            contrib[valid] = window[valid] * shifted[valid] / ((w_norm * p_norm) + EPS)
-        elif w_norm <= EPS and p_norm <= EPS:
-            contrib[valid] = 1.0 / float(np.count_nonzero(valid))
-        num[valid] += weight * contrib[valid]
-        den[valid] += weight
-    out = np.zeros_like(window, dtype=float)
-    valid_den = den > 0.0
-    out[valid_den] = num[valid_den] / den[valid_den]
-    return out
+def _weighted_cos_backend(window: Any, window_mask: Any, metrics: PrecomputedLagMetrics, weights: Any, backend: ArrayBackend) -> tuple[Any, Any]:
+    xp = backend.xp
+    w = xp.asarray(window, dtype=float)
+    valid = xp.asarray(window_mask, dtype=bool)[None, :] & metrics.shifted_masks
+    valid_f = valid.astype(float)
+    w_norm = xp.sqrt(xp.sum(xp.where(valid, w[None, :] * w[None, :], 0.0), axis=1))
+    p_norm = xp.sqrt(xp.sum(xp.where(valid, metrics.shifted_prototypes * metrics.shifted_prototypes, 0.0), axis=1))
+    valid_count = xp.sum(valid_f, axis=1)
+    contrib = xp.where(valid, w[None, :] * metrics.shifted_prototypes / ((w_norm * p_norm)[:, None] + EPS), 0.0)
+    both_zero = (w_norm <= EPS) & (p_norm <= EPS) & (valid_count > 0)
+    contrib = xp.where(both_zero[:, None] & valid, 1.0 / xp.maximum(valid_count[:, None], 1.0), contrib)
+    den = xp.sum(weights[:, None] * valid_f, axis=0)
+    num = xp.sum(weights[:, None] * contrib * valid_f, axis=0)
+    out = xp.where(den > 0, num / xp.maximum(den, EPS), 0.0)
+    return out, den > 0
 
 
 def explain_shift_robust_window(
@@ -411,65 +611,70 @@ def explain_shift_robust_window(
     sample_rate: int,
     lambda_grid: Sequence[float],
     config: ShiftAlignmentConfig,
+    backend: ArrayBackend | None = None,
 ) -> ShiftRobustWindowExplanation:
+    resolved = backend or resolve_backend("cpu")
+    cfg = validate_alignment_config(config)
+    target_metrics, target_batch, target_timings = precompute_alignment_for_lambdas(
+        window, window_mask, p_target, target_mask, sample_rate=sample_rate, lambda_grid=lambda_grid, config=cfg, backend=resolved
+    )
+    rival_metrics, rival_batch, rival_timings = precompute_alignment_for_lambdas(
+        window, window_mask, p_rival, rival_mask, sample_rate=sample_rate, lambda_grid=lambda_grid, config=cfg, backend=resolved
+    )
+    timings: dict[str, float] = {}
+    for key in set(target_timings) | set(rival_timings):
+        timings[key] = float(target_timings.get(key, 0.0)) + float(rival_timings.get(key, 0.0))
+    xp = resolved.xp
     phi_diff_by_lambda: dict[float, np.ndarray] = {}
     phi_cos_by_lambda: dict[float, np.ndarray] = {}
     phi_hyb_by_lambda: dict[float, np.ndarray] = {}
     evidence_by_lambda: dict[float, float] = {}
-    target_alignment_by_lambda: dict[float, ShiftAlignmentResult] = {}
-    rival_alignment_by_lambda: dict[float, ShiftAlignmentResult] = {}
-    for lambda_hyb in lambda_grid:
-        lambda_value = float(lambda_hyb)
-        target_alignment = align_prototype_to_window(
-            window,
-            window_mask,
-            p_target,
-            target_mask,
-            sample_rate=sample_rate,
-            lambda_hyb=lambda_value,
-            config=config,
-        )
-        rival_alignment = align_prototype_to_window(
-            window,
-            window_mask,
-            p_rival,
-            rival_mask,
-            sample_rate=sample_rate,
-            lambda_hyb=lambda_value,
-            config=config,
-        )
-        if not target_alignment.valid or not rival_alignment.valid:
-            phi_diff = np.zeros_like(window, dtype=float)
-            phi_cos = np.zeros_like(window, dtype=float)
+    effective_mask_by_lambda: dict[float, np.ndarray] = {}
+    target_results = _alignment_results(target_metrics, target_batch, sample_rate, resolved)
+    rival_results = _alignment_results(rival_metrics, rival_batch, sample_rate, resolved)
+    window_mask_x = xp.asarray(window_mask, dtype=bool)
+    for row_idx, lambda_value in enumerate(lambda_grid):
+        target_weights = target_batch.weights[row_idx]
+        rival_weights = rival_batch.weights[row_idx]
+        start = perf_counter()
+        target_sq, target_eff = _weighted_squared_error_backend(window, window_mask, target_metrics, target_weights, resolved)
+        rival_sq, rival_eff = _weighted_squared_error_backend(window, window_mask, rival_metrics, rival_weights, resolved)
+        timings["aligned_diff_runtime_sec"] = timings.get("aligned_diff_runtime_sec", 0.0) + perf_counter() - start
+        start = perf_counter()
+        target_cos, target_cos_eff = _weighted_cos_backend(window, window_mask, target_metrics, target_weights, resolved)
+        rival_cos, rival_cos_eff = _weighted_cos_backend(window, window_mask, rival_metrics, rival_weights, resolved)
+        timings["aligned_cos_runtime_sec"] = timings.get("aligned_cos_runtime_sec", 0.0) + perf_counter() - start
+        effective = window_mask_x & (target_eff | rival_eff | target_cos_eff | rival_cos_eff)
+        both_valid = bool(target_results[float(lambda_value)].valid and rival_results[float(lambda_value)].valid)
+        if not both_valid and not (target_results[float(lambda_value)].fallback_used or rival_results[float(lambda_value)].fallback_used):
+            phi_diff_x = xp.zeros_like(xp.asarray(window, dtype=float))
+            phi_cos_x = xp.zeros_like(phi_diff_x)
         else:
-            target_sq = _weighted_squared_error(window, window_mask, p_target, target_mask, target_alignment)
-            rival_sq = _weighted_squared_error(window, window_mask, p_rival, rival_mask, rival_alignment)
-            phi_diff = rival_sq - target_sq
-            target_cos = _weighted_cos_contribution(window, window_mask, p_target, target_mask, target_alignment)
-            rival_cos = _weighted_cos_contribution(window, window_mask, p_rival, rival_mask, rival_alignment)
-            phi_cos = target_cos - rival_cos
-            phi_diff[~window_mask] = 0.0
-            phi_cos[~window_mask] = 0.0
-        diff_scale = float(np.sum(np.abs(phi_diff[window_mask])) + EPS)
-        cos_scale = float(np.sum(np.abs(phi_cos[window_mask])) + EPS)
-        phi_hyb = lambda_value * (phi_diff / diff_scale) + (1.0 - lambda_value) * (phi_cos / cos_scale)
-        phi_hyb[~window_mask] = 0.0
-        if not np.all(np.isfinite(phi_hyb)):
-            phi_hyb = np.zeros_like(window, dtype=float)
-        phi_diff_by_lambda[lambda_value] = phi_diff
-        phi_cos_by_lambda[lambda_value] = phi_cos
-        phi_hyb_by_lambda[lambda_value] = phi_hyb
-        evidence_by_lambda[lambda_value] = float(np.sum(phi_hyb[window_mask]))
-        target_alignment_by_lambda[lambda_value] = target_alignment
-        rival_alignment_by_lambda[lambda_value] = rival_alignment
+            phi_diff_x = xp.where(effective, rival_sq - target_sq, 0.0)
+            phi_cos_x = xp.where(effective, target_cos - rival_cos, 0.0)
+        diff_scale = xp.sum(xp.abs(phi_diff_x[effective])) + EPS
+        cos_scale = xp.sum(xp.abs(phi_cos_x[effective])) + EPS
+        lambda_float = float(lambda_value)
+        phi_hyb_x = xp.where(effective, lambda_float * (phi_diff_x / diff_scale) + (1.0 - lambda_float) * (phi_cos_x / cos_scale), 0.0)
+        phi_hyb = asnumpy(phi_hyb_x, resolved).astype(float, copy=True)
+        phi_diff = asnumpy(phi_diff_x, resolved).astype(float, copy=True)
+        phi_cos = asnumpy(phi_cos_x, resolved).astype(float, copy=True)
+        eff_np = asnumpy(effective, resolved).astype(bool, copy=True)
+        phi_diff_by_lambda[lambda_float] = phi_diff
+        phi_cos_by_lambda[lambda_float] = phi_cos
+        phi_hyb_by_lambda[lambda_float] = np.where(np.isfinite(phi_hyb), phi_hyb, 0.0)
+        evidence_by_lambda[lambda_float] = float(np.sum(phi_hyb_by_lambda[lambda_float][eff_np]))
+        effective_mask_by_lambda[lambda_float] = eff_np
     return ShiftRobustWindowExplanation(
         phi_diff_by_lambda=phi_diff_by_lambda,
         phi_cos_by_lambda=phi_cos_by_lambda,
         phi_hyb_by_lambda=phi_hyb_by_lambda,
         evidence_by_lambda=evidence_by_lambda,
-        target_alignment_by_lambda=target_alignment_by_lambda,
-        rival_alignment_by_lambda=rival_alignment_by_lambda,
-        mask=window_mask.astype(bool, copy=True),
+        target_alignment_by_lambda=target_results,
+        rival_alignment_by_lambda=rival_results,
+        effective_mask_by_lambda=effective_mask_by_lambda,
+        mask=np.asarray(window_mask, dtype=bool).copy(),
+        timings=timings,
     )
 
 
@@ -480,10 +685,8 @@ def _overlap_add(window_attrs: np.ndarray, masks: np.ndarray, starts: np.ndarray
         valid_idx = np.where(mask)[0]
         sample_idx = valid_idx + int(start)
         keep = sample_idx < n_samples
-        sample_idx = sample_idx[keep]
-        valid_idx = valid_idx[keep]
-        values[sample_idx] += attr[valid_idx]
-        counts[sample_idx] += 1.0
+        values[sample_idx[keep]] += attr[valid_idx[keep]]
+        counts[sample_idx[keep]] += 1.0
     out = np.zeros(n_samples, dtype=float)
     covered = counts > 0.0
     out[covered] = values[covered] / counts[covered]
@@ -499,6 +702,7 @@ def _top_segments(
     top_k: int,
     positive: bool,
     lambda_hyb: float,
+    sample_rate: int,
     target_alignment: Sequence[ShiftAlignmentResult],
     rival_alignment: Sequence[ShiftAlignmentResult],
 ) -> list[dict[str, Any]]:
@@ -512,7 +716,7 @@ def _top_segments(
     else:
         keep = [idx for idx in order.tolist() if evidence[idx] < 0.0]
         role = "negative"
-    rows: list[dict[str, Any]] = []
+    rows = []
     for rank, idx in enumerate(keep[:top_k], start=1):
         start = int(starts[idx])
         end = min(start + int(lengths[idx]), waveform.shape[0])
@@ -527,8 +731,8 @@ def _top_segments(
                 "sign": role,
                 "start_sample": start,
                 "end_sample": int(end),
-                "start_time_sec": start / 1.0,
-                "end_time_sec": end / 1.0,
+                "start_time_sec": float(start) / float(sample_rate),
+                "end_time_sec": float(end) / float(sample_rate),
                 "evidence": float(evidence[idx]),
                 "target_best_lag_samples": int(ta.best_lag_samples),
                 "target_best_lag_ms": float(ta.best_lag_ms),
@@ -564,18 +768,54 @@ def _labels_without_target(labels: np.ndarray, target_label: Any) -> list[Any]:
     return [label for label in labels.tolist() if label != target_label]
 
 
-def _select_rival_label(windows: np.ndarray, masks: np.ndarray, context: Any, target_label: Any) -> Any:
+def _select_rival_label(
+    windows: np.ndarray,
+    masks: np.ndarray,
+    context: Any,
+    target_label: Any,
+    *,
+    config: ShiftAlignmentConfig,
+    backend: ArrayBackend,
+) -> tuple[Any, dict[str, float | str]]:
     candidates = _labels_without_target(context.prototype_labels, target_label)
     if not candidates:
         raise ValueError("rival_label is None, but no non-target raw prototypes exist")
-    scores: list[float] = []
+    scores = []
     for label in candidates:
         proto = np.asarray(context.prototypes[label], dtype=float)
         proto_mask = np.asarray(context.prototype_masks[label], dtype=bool)
-        values = [masked_shift_mse(windows[i], masks[i], proto, proto_mask, 0)[0] for i in range(windows.shape[0])]
-        finite = [value for value in values if np.isfinite(value)]
-        scores.append(float(np.mean(finite)) if finite else float("inf"))
-    return candidates[int(np.argmin(np.asarray(scores, dtype=float)))]
+        values = []
+        for i in range(windows.shape[0]):
+            if config.rival_selection_mode == "zero_lag_mse":
+                value = masked_shift_mse(windows[i], masks[i], proto, proto_mask, 0)[0]
+            else:
+                metrics, batch, _ = precompute_alignment_for_lambdas(
+                    windows[i],
+                    masks[i],
+                    proto,
+                    proto_mask,
+                    sample_rate=int(context.target_sr),
+                    lambda_grid=(float(config.rival_selection_lambda),),
+                    config=config,
+                    backend=backend,
+                )
+                costs = asnumpy(batch.costs, backend)[0]
+                finite = costs[np.isfinite(costs)]
+                value = float(np.min(finite)) if finite.size else float("inf")
+            if np.isfinite(value):
+                values.append(float(value))
+        scores.append(float(np.mean(values)) if values else float("inf"))
+    order = np.argsort(np.asarray(scores, dtype=float))
+    best_i = int(order[0])
+    second = float(scores[int(order[1])]) if len(order) > 1 else float("inf")
+    best = float(scores[best_i])
+    return candidates[best_i], {
+        "rival_selection_mode": config.rival_selection_mode,
+        "rival_selection_lambda": float(config.rival_selection_lambda),
+        "rival_selection_cost": best,
+        "rival_selection_second_best_cost": second,
+        "rival_selection_margin": second - best if np.isfinite(second) and np.isfinite(best) else "",
+    }
 
 
 def explain_shift_robust_raw_waveform(
@@ -592,32 +832,39 @@ def explain_shift_robust_raw_waveform(
     device: str = "cpu",
     details: dict[str, Any] | None = None,
     config: ShiftAlignmentConfig | None = None,
+    input_mask: np.ndarray | None = None,
 ) -> Any:
     cfg = validate_alignment_config(config or ShiftAlignmentConfig(alignment_mode="soft_bounded"))
     if cfg.alignment_mode == "none":
         raise ValueError("explain_shift_robust_raw_waveform is only for bounded alignment modes")
-    if device == "cuda":
-        import cupy as cp  # type: ignore[import-not-found]
-
-        cp.cuda.runtime.getDeviceCount()
-        resolved_device = "cuda_host_numpy"
-    elif device == "auto":
-        try:
-            import cupy as cp  # type: ignore[import-not-found]
-
-            cp.cuda.runtime.getDeviceCount()
-            resolved_device = "cuda_host_numpy"
-        except Exception:
-            resolved_device = "cpu"
-    else:
-        resolved_device = "cpu"
+    backend = resolve_backend(device)
     waveform_arr = _as_raw_waveform("waveform", waveform)
     if int(sample_rate) != int(context.target_sr):
         raise ValueError("shift-robust runner expects the waveform already resampled to context.target_sr")
-    windows, masks, starts, lengths = _raw_windows(waveform_arr, int(context.segment_length), int(context.hop_length))
+    if input_mask is None:
+        sample_mask = np.ones(waveform_arr.shape, dtype=bool)
+    else:
+        sample_mask = np.asarray(input_mask, dtype=bool)
+        if sample_mask.shape != waveform_arr.shape:
+            raise ValueError("input_mask must match waveform shape")
+    windows, base_masks, starts, lengths = _raw_windows(waveform_arr, int(context.segment_length), int(context.hop_length))
+    mask_windows, _, _, _ = _raw_windows(sample_mask.astype(float), int(context.segment_length), int(context.hop_length))
+    masks = base_masks & (mask_windows > 0.5)
     if target_label not in context.prototypes:
         raise ValueError(f"no raw prototype found for target_label={target_label!r}")
-    resolved_rival = _select_rival_label(windows, masks, context, target_label) if rival_label is None else rival_label
+    rival_start = perf_counter()
+    if rival_label is None:
+        resolved_rival, rival_details = _select_rival_label(windows, masks, context, target_label, config=cfg, backend=backend)
+    else:
+        resolved_rival = rival_label
+        rival_details = {
+            "rival_selection_mode": "provided",
+            "rival_selection_lambda": "",
+            "rival_selection_cost": "",
+            "rival_selection_second_best_cost": "",
+            "rival_selection_margin": "",
+        }
+    rival_runtime = perf_counter() - rival_start
     if resolved_rival == target_label:
         raise ValueError("rival_label must differ from target_label")
     if resolved_rival not in context.prototypes:
@@ -639,16 +886,32 @@ def explain_shift_robust_raw_waveform(
             sample_rate=int(context.target_sr),
             lambda_grid=lambdas,
             config=cfg,
+            backend=backend,
         )
         for i in range(windows.shape[0])
     ]
+    aggregate_timings: dict[str, float] = {
+        "lag_batch_build_runtime_sec": 0.0,
+        "coarse_metric_runtime_sec": 0.0,
+        "fine_metric_runtime_sec": 0.0,
+        "lambda_cost_runtime_sec": 0.0,
+        "alignment_weight_runtime_sec": 0.0,
+        "aligned_diff_runtime_sec": 0.0,
+        "aligned_cos_runtime_sec": 0.0,
+        "backend_transfer_runtime_sec": 0.0,
+    }
+    for item in per_window:
+        for key, value in item.timings.items():
+            aggregate_timings[key] = aggregate_timings.get(key, 0.0) + float(value)
     lambda_results: dict[float, dict[str, Any]] = {}
+    fallback_rates = []
     for lambda_value in lambdas:
         window_attrs = np.stack([item.phi_hyb_by_lambda[lambda_value] for item in per_window], axis=0)
         window_diff = np.stack([item.phi_diff_by_lambda[lambda_value] for item in per_window], axis=0)
         window_cos = np.stack([item.phi_cos_by_lambda[lambda_value] for item in per_window], axis=0)
+        effective_masks = np.stack([item.effective_mask_by_lambda[lambda_value] for item in per_window], axis=0)
         window_evidence = np.asarray([item.evidence_by_lambda[lambda_value] for item in per_window], dtype=float)
-        phi = _overlap_add(window_attrs, masks, starts, waveform_arr.shape[0])
+        phi = _overlap_add(window_attrs, effective_masks, starts, waveform_arr.shape[0])
         if phi.shape != waveform_arr.shape:
             raise RuntimeError(f"raw waveform attribution shape mismatch: expected {waveform_arr.shape}, got {phi.shape}")
         if not np.all(np.isfinite(phi)):
@@ -663,6 +926,7 @@ def explain_shift_robust_raw_waveform(
             top_k=top_k_segments,
             positive=True,
             lambda_hyb=lambda_value,
+            sample_rate=int(context.target_sr),
             target_alignment=target_alignments,
             rival_alignment=rival_alignments,
         )
@@ -674,40 +938,30 @@ def explain_shift_robust_raw_waveform(
             top_k=top_k_segments,
             positive=False,
             lambda_hyb=lambda_value,
+            sample_rate=int(context.target_sr),
             target_alignment=target_alignments,
             rival_alignment=rival_alignments,
         )
-        for rows in (top_positive, top_negative):
-            for row in rows:
-                row["start_time_sec"] = float(row["start_sample"]) / float(context.target_sr)
-                row["end_time_sec"] = float(row["end_sample"]) / float(context.target_sr)
+        selected_lambdas = set(round(v, 10) for v in cfg.generation_selected_lambdas)
+        generation_selected = cfg.generation_scope == "all" or (cfg.generation_scope == "selected" and round(float(lambda_value), 10) in selected_lambdas)
         generation_status = {"target": "skipped", "rival": "skipped"}
         generated_target = None
         generated_rival = None
-        if cfg.generation_scope in {"selected", "all"}:
+        if generation_selected:
             if top_positive:
                 metadata = {key: value for key, value in top_positive[0].items() if key != "segment"}
                 generated_target, generation_status["target"] = _call_generator(
-                    generator,
-                    label=target_label,
-                    lambda_hyb=lambda_value,
-                    segment=top_positive[0]["segment"],
-                    sample_rate=int(context.target_sr),
-                    role="target",
-                    metadata=metadata,
+                    generator, label=target_label, lambda_hyb=lambda_value, segment=top_positive[0]["segment"], sample_rate=int(context.target_sr), role="target", metadata=metadata
                 )
             if top_negative:
                 metadata = {key: value for key, value in top_negative[0].items() if key != "segment"}
                 generated_rival, generation_status["rival"] = _call_generator(
-                    generator,
-                    label=resolved_rival,
-                    lambda_hyb=lambda_value,
-                    segment=top_negative[0]["segment"],
-                    sample_rate=int(context.target_sr),
-                    role="rival",
-                    metadata=metadata,
+                    generator, label=resolved_rival, lambda_hyb=lambda_value, segment=top_negative[0]["segment"], sample_rate=int(context.target_sr), role="rival", metadata=metadata
                 )
         alignment_valid = np.asarray([ta.valid and ra.valid for ta, ra in zip(target_alignments, rival_alignments, strict=True)], dtype=bool)
+        fallback_used = np.asarray([ta.fallback_used or ra.fallback_used for ta, ra in zip(target_alignments, rival_alignments, strict=True)], dtype=bool)
+        fallback_rate = float(np.mean(fallback_used)) if fallback_used.size else 0.0
+        fallback_rates.append(fallback_rate)
         target_lags = np.asarray([ta.best_lag_ms for ta in target_alignments], dtype=float)
         rival_lags = np.asarray([ra.best_lag_ms for ra in rival_alignments], dtype=float)
         shift_max_samples = int(round(int(context.target_sr) * cfg.shift_max_ms / 1000.0))
@@ -718,7 +972,8 @@ def explain_shift_robust_raw_waveform(
             "window_starts": starts.copy(),
             "window_lengths": lengths.copy(),
             "window_masks": masks.copy(),
-            "effective_window_masks": masks.copy(),
+            "effective_window_masks": effective_masks.copy(),
+            "effective_window_masks_by_lambda": {float(lambda_value): effective_masks.copy()},
             "evidence": float(np.sum(window_evidence)),
             "top_positive_segments": top_positive,
             "top_negative_segments": top_negative,
@@ -731,6 +986,8 @@ def explain_shift_robust_raw_waveform(
                 "shift_max_ms": float(cfg.shift_max_ms),
                 "minimum_overlap_ratio": float(cfg.minimum_overlap_ratio),
                 "alignment_temperature": float(cfg.alignment_temperature),
+                **rival_details,
+                "rival_selection_runtime_sec": rival_runtime,
                 "diff_evidence": np.sum(window_diff, axis=1).astype(float).tolist(),
                 "cos_evidence": np.sum(window_cos, axis=1).astype(float).tolist(),
                 "diff_scale": (np.sum(np.abs(window_diff), axis=1) + EPS).astype(float).tolist(),
@@ -748,14 +1005,26 @@ def explain_shift_robust_raw_waveform(
                 "rival_boundary_hit_rate": float(np.mean([abs(ra.best_lag_samples) >= shift_max_samples for ra in rival_alignments])) if rival_alignments else 0.0,
                 "alignment_confidence_mean": float(np.mean([0.5 * (ta.confidence + ra.confidence) for ta, ra in zip(target_alignments, rival_alignments, strict=True)])) if target_alignments else 0.0,
                 "alignment_valid_rate": float(np.mean(alignment_valid)) if alignment_valid.size else 0.0,
-                "device": resolved_device,
+                "fallback_rate": fallback_rate,
+                "generation_scope": cfg.generation_scope,
+                "generation_selected": generation_selected,
+                "generation_selection_source": "generation_selected_lambdas" if cfg.generation_scope == "selected" else cfg.generation_scope,
+                "requested_device": device,
+                "resolved_backend": backend.name,
+                "cuda_device_name": backend.cuda_device_name,
+                "cupy_version": backend.cupy_version,
+                "cuda_runtime_version": backend.cuda_runtime_version,
+                "backend_fallback_used": backend.backend_fallback_used,
+                "device": backend.name,
+                "runtime_scope": "per_sample_all_lambdas",
+                **aggregate_timings,
                 "input_shape": tuple(waveform_arr.shape),
                 "output_shape": tuple(phi.shape),
-                "target_alignment": target_alignments,
-                "rival_alignment": rival_alignments,
+                "target_alignment": target_alignments if cfg.save_alignment_details else [],
+                "rival_alignment": rival_alignments if cfg.save_alignment_details else [],
             },
         }
-    best_lambda = max(lambdas, key=lambda value: float(lambda_results[float(value)]["evidence"])) if lambdas else None
+    diagnostic_best = max(lambdas, key=lambda value: float(lambda_results[float(value)]["evidence"])) if lambdas else None
     merged_details = {} if details is None else dict(details)
     merged_details.update(
         {
@@ -768,13 +1037,24 @@ def explain_shift_robust_raw_waveform(
             "segment_length": int(context.segment_length),
             "hop_length": int(context.hop_length),
             "lambda_grid": tuple(float(value) for value in lambdas),
-            "device": resolved_device,
+            "device": backend.name,
+            "requested_device": device,
+            "resolved_backend": backend.name,
+            "cuda_device_name": backend.cuda_device_name,
+            "cupy_version": backend.cupy_version,
+            "cuda_runtime_version": backend.cuda_runtime_version,
+            "backend_fallback_used": backend.backend_fallback_used,
             "target_label": target_label,
             "rival_label": resolved_rival,
             "alignment_mode": cfg.alignment_mode,
             "shift_max_ms": float(cfg.shift_max_ms),
             "minimum_overlap_ratio": float(cfg.minimum_overlap_ratio),
             "alignment_temperature": float(cfg.alignment_temperature),
+            "diagnostic_max_evidence_lambda": diagnostic_best,
+            "diagnostic_only": True,
+            "not_used_for_evaluation": True,
+            "fallback_rate": float(np.mean(fallback_rates)) if fallback_rates else 0.0,
+            **rival_details,
         }
     )
     return fpde.RawWaveformFPDEExplanation(
@@ -784,7 +1064,7 @@ def explain_shift_robust_raw_waveform(
         waveform=waveform_arr.astype(float, copy=True),
         sample_rate=int(context.target_sr),
         lambda_results=lambda_results,
-        best_lambda=None if best_lambda is None else float(best_lambda),
+        best_lambda=None,
         details=merged_details,
     )
 
@@ -833,6 +1113,10 @@ def alignment_result_to_rows(
                 "rival_alignment_confidence": float(ra.confidence),
                 "target_alignment_valid": bool(ta.valid),
                 "rival_alignment_valid": bool(ra.valid),
+                "target_fallback_used": bool(ta.fallback_used),
+                "rival_fallback_used": bool(ra.fallback_used),
+                "target_fallback_reason": ta.fallback_reason,
+                "rival_fallback_reason": ra.fallback_reason,
             }
         )
     return rows

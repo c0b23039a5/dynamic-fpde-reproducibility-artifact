@@ -1,5 +1,5 @@
 # Core dependencies for reproducing the FPDE OpenML-CC18 experiments
-fpde @ git+https://github.com/fpde-xai/fpde.git@dynamic
+fpde @ git+https://github.com/fpde-xai/fpde.git@c6bd41c76bb501b2d9322fa36ae900698aaf9337
 numpy
 pandas
 tabulate

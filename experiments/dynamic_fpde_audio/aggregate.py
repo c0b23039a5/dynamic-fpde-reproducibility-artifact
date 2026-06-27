@@ -234,3 +234,43 @@ def write_csv(path: str | Path, rows: list[dict[str, object]], fieldnames: list[
 def read_csv_rows(path: str | Path) -> list[dict[str, str]]:
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def aggregate_rawfeat_samples(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    """Aggregate RawFeat sample metrics by method and hybrid lambda."""
+    groups: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        groups[(str(row.get("method", "rawfeat_hyb")), str(row.get("lambda_hyb", "")))].append(row)
+    output: list[dict[str, object]] = []
+    for (method, lambda_hyb), group in sorted(groups.items()):
+        exactness = [v for row in group if (v := _to_float(row.get("abs_exactness_residual"))) is not None]
+        evidence = [v for row in group if (v := _to_float(row.get("absolute_evidence"))) is not None]
+        output.append(
+            {
+                "method": method,
+                "lambda_hyb": lambda_hyb,
+                "n": len(group),
+                "mean_exactness_residual": _stats(exactness)["mean"],
+                "mean_absolute_evidence": _stats(evidence)["mean"],
+                "shape_match_rate": sum(str(row.get("shape_match", "")).lower() == "true" for row in group) / len(group),
+            }
+        )
+    return output
+
+
+def aggregate_rawfeat_generation(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    """Summarize regenerated-waveform RawFeat audits when generation is enabled."""
+    items = list(rows)
+    if not items:
+        return []
+    residuals = [v for row in items if (v := _to_float(row.get("generated_abs_exactness_residual"))) is not None]
+    evidence = [v for row in items if (v := _to_float(row.get("generated_absolute_evidence"))) is not None]
+    return [
+        {
+            "n": len(items),
+            "mean_generated_exactness_residual": _stats(residuals)["mean"],
+            "mean_generated_absolute_evidence": _stats(evidence)["mean"],
+            "shape_match_rate": sum(str(row.get("shape_match", "")).lower() == "true" for row in items) / len(items),
+            "audit_pass_rate": sum(str(row.get("generated_audit_passed", "")).lower() == "true" for row in items) / len(items),
+        }
+    ]

@@ -25,7 +25,7 @@ def test_project_installs_fpde_from_pinned_commit_sha():
         == "Reproducible Dynamic-FPDE experiments for time-resolved prototype-directional audio explanations."
     )
     deps = pyproject["project"]["dependencies"]
-    pinned = "fpde @ git+https://github.com/fpde-xai/fpde.git@c6bd41c76bb501b2d9322fa36ae900698aaf9337"
+    pinned = "fpde @ git+https://github.com/fpde-xai/fpde.git@e39f36b59f61a170fe24988556acea682f95bf48"
     assert pinned in deps
     assert "soundfile" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
     assert "matplotlib" in pyproject["project"]["optional-dependencies"]["plot"]

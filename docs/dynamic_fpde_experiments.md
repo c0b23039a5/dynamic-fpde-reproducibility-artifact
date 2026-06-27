@@ -1,9 +1,9 @@
-# Raw-Waveform Dynamic-FPDE Audio Experiments
+# Raw-Waveform-only Dynamic-FPDE Comparison Experiments
 
-This artifact treats **Raw-Waveform Dynamic-FPDE** as the primary confirmed
-ESC-50 workflow. The input is only a raw waveform, its label, sample rate, and
-sample ID. The legacy Native-Time/frame-level feature runner is retained for
-comparison experiments, but it is not the main Raw-Waveform surface.
+This document describes the preserved **Raw-Waveform-only Dynamic-FPDE**
+legacy/comparison workflow. RawFeat Dynamic-FPDE is now primary and combines
+raw waveform frames with aligned frame-level acoustic descriptors. The
+Native-Time feature-only runner is also retained as a comparison workflow.
 
 ## Dataset
 
@@ -35,7 +35,7 @@ Allowed preprocessing is deliberately narrow:
 - split into sliding raw windows
 - zero-pad only waveforms shorter than one segment, with a valid mask
 
-The runner does not use:
+This Raw-Waveform-only comparison runner does not use:
 
 - acoustic feature extraction
 - spectrograms
@@ -351,11 +351,11 @@ python experiments/dynamic_fpde_audio/run_esc50_dynamic_fpde.py \
 That runner operates on frame-level acoustic feature matrices and writes the
 older `dynamic_fpde_*` CSV and LaTeX table files. Its generated tables should
 be interpreted as Native-Time feature-space comparison outputs, not as the
-primary Raw-Waveform evidence surface.
+primary RawFeat evidence surface.
 
 ## Interpretation Limits
 
-Raw-Waveform Dynamic-FPDE is prototype evidence decomposition over raw samples.
+Raw-Waveform-only Dynamic-FPDE is prototype evidence decomposition over raw samples.
 It is not a causal explanation, is not a ground-truth explanation, does not
 claim black-box classifier faithfulness, does not perform global DTW alignment,
 and does not claim perfect time invariance or raw waveform reconstruction from

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Reproducible Dynamic-FPDE experiments for time-resolved prototype-directional audio explanations."
 requires-python = ">=3.12"
 dependencies = [
-  "fpde @ git+https://github.com/fpde-xai/fpde.git@c6bd41c76bb501b2d9322fa36ae900698aaf9337",
+  "fpde @ git+https://github.com/fpde-xai/fpde.git@e39f36b59f61a170fe24988556acea682f95bf48",
   "numpy",
   "pandas",
   "scikit-learn",

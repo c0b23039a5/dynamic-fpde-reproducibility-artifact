@@ -83,12 +83,11 @@ def _frame_signal(y: np.ndarray, frame_length: int, hop_length: int) -> np.ndarr
         padded = np.pad(y, (0, frame_length - y.size))
         return padded.reshape(1, frame_length)
 
-    n_frames = 1 + (y.size - frame_length) // hop_length
-    if n_frames <= 0:
-        n_frames = 1
-    shape = (n_frames, frame_length)
-    strides = (y.strides[0] * hop_length, y.strides[0])
-    return np.lib.stride_tricks.as_strided(y, shape=shape, strides=strides).copy()
+    starts = list(range(0, y.size - frame_length + 1, hop_length))
+    final_start = y.size - frame_length
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return np.stack([y[start : start + frame_length] for start in starts], axis=0)
 
 
 def extract_frame_features(

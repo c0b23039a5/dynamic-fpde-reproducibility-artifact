@@ -77,9 +77,12 @@ def test_rawfeat_runner_smoke_with_generation_audit(tmp_path: Path):
     assert all(row["shape_match"] == "True" for row in sample_rows)
     assert all(float(row["abs_exactness_residual"]) < 1e-9 for row in sample_rows)
     assert all(float(row["generated_abs_exactness_residual"]) < 1e-9 for row in generation_rows)
+    sf = pytest.importorskip("soundfile")
     for row in sample_rows:
         method_dir = output / "samples" / row["sample_id"] / "rawfeat_hyb_lambda_0.5"
-        assert (method_dir / "generated_target.wav").exists()
+        generated_wav = method_dir / "generated_target.wav"
+        assert generated_wav.exists()
+        assert sf.info(generated_wav).frames == 400
         metrics = json.loads((method_dir / "metrics.json").read_text(encoding="utf-8"))
         assert metrics["generation_audit"]["shape_match"] is True
         assert (output / "samples" / row["sample_id"] / "summary.csv").exists()

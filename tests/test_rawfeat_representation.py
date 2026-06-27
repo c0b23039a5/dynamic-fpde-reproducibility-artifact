@@ -22,6 +22,28 @@ def test_frame_waveform_preserves_variable_length_and_adds_end_aligned_frame():
     assert mask.all()
 
 
+def test_end_aligned_overlap_add_uses_exact_frame_starts():
+    original = np.arange(11, dtype=float)
+    frames, mask, starts = frame_waveform(
+        original,
+        frame_length=4,
+        hop_length=3,
+        return_starts=True,
+    )
+
+    reconstructed = overlap_add_frames(
+        frames,
+        frame_length=4,
+        hop_length=3,
+        output_length=original.size,
+        frame_starts=starts,
+    )
+
+    np.testing.assert_array_equal(starts, [0, 3, 6, 7])
+    np.testing.assert_array_equal(mask, np.ones(4, dtype=bool))
+    np.testing.assert_allclose(reconstructed, original)
+
+
 def test_short_waveform_produces_one_padded_frame():
     frames, mask = frame_waveform(np.array([1.0, 2.0]), frame_length=5, hop_length=2)
 
@@ -50,6 +72,8 @@ def test_build_rawfeat_input_has_matching_time_axes(tmp_path: Path):
     assert np.all(np.isfinite(features))
     assert np.all(np.isfinite(dt))
     assert metadata["sample_rate"] == 4000
+    assert metadata["original_waveform_length"] == metadata["waveform_length"]
+    assert len(metadata["frame_starts"]) == raw.shape[0]
 
 
 def test_overlap_add_frames_returns_finite_waveform():

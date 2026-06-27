@@ -13,8 +13,6 @@ dependencies = [
   "pandas",
   "scikit-learn",
   "scipy",
-  "torch",
-  "torchaudio",
   "tqdm",
   "pyyaml",
 ]
@@ -26,6 +24,10 @@ dev = [
 ]
 dynamic-audio = [
   "soundfile",
+]
+legacy-audio = [
+  "torch",
+  "torchaudio",
 ]
 raw-audio-generative = [
   "torch",

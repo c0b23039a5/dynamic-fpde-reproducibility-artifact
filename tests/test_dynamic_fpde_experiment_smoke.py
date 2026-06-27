@@ -28,6 +28,9 @@ def test_project_installs_fpde_from_pinned_commit_sha():
     pinned = "fpde @ git+https://github.com/fpde-xai/fpde.git@e39f36b59f61a170fe24988556acea682f95bf48"
     assert pinned in deps
     assert "soundfile" in pyproject["project"]["optional-dependencies"]["dynamic-audio"]
+    assert "torch" not in deps
+    assert "torchaudio" not in deps
+    assert pyproject["project"]["optional-dependencies"]["legacy-audio"] == ["torch", "torchaudio"]
     assert "matplotlib" in pyproject["project"]["optional-dependencies"]["plot"]
     assert "openml" not in pyproject["project"]["optional-dependencies"]
     assert "baselines" not in pyproject["project"]["optional-dependencies"]

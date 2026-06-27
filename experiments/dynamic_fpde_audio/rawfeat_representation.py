@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from math import gcd
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 import numpy as np
 
@@ -34,7 +34,33 @@ def load_mono_resampled_audio(audio_path: str | Path, target_sr: int) -> tuple[n
     return mono, int(target_sr)
 
 
-def frame_waveform(y: np.ndarray, frame_length: int, hop_length: int) -> tuple[np.ndarray, np.ndarray]:
+@overload
+def frame_waveform(
+    y: np.ndarray,
+    frame_length: int,
+    hop_length: int,
+    *,
+    return_starts: Literal[False] = False,
+) -> tuple[np.ndarray, np.ndarray]: ...
+
+
+@overload
+def frame_waveform(
+    y: np.ndarray,
+    frame_length: int,
+    hop_length: int,
+    *,
+    return_starts: Literal[True],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+
+def frame_waveform(
+    y: np.ndarray,
+    frame_length: int,
+    hop_length: int,
+    *,
+    return_starts: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Frame one waveform without imposing a fixed temporal length."""
     values = np.asarray(y, dtype=np.float64)
     if values.ndim != 1:
@@ -48,6 +74,7 @@ def frame_waveform(y: np.ndarray, frame_length: int, hop_length: int) -> tuple[n
     if frame_length <= 0 or hop_length <= 0:
         raise ValueError("frame_length and hop_length must be positive")
     if values.size < frame_length:
+        starts = [0]
         frames = np.pad(values, (0, frame_length - values.size))[None, :]
     else:
         starts = list(range(0, values.size - frame_length + 1, hop_length))
@@ -55,7 +82,10 @@ def frame_waveform(y: np.ndarray, frame_length: int, hop_length: int) -> tuple[n
         if starts[-1] != final_start:
             starts.append(final_start)
         frames = np.stack([values[start : start + frame_length] for start in starts], axis=0)
-    return frames.astype(np.float64, copy=False), np.ones(frames.shape[0], dtype=bool)
+    output = (frames.astype(np.float64, copy=False), np.ones(frames.shape[0], dtype=bool))
+    if return_starts:
+        return (*output, np.asarray(starts, dtype=np.int64))
+    return output
 
 
 def frame_times_sec(T: int, hop_length: int, target_sr: int) -> np.ndarray:
@@ -81,6 +111,7 @@ def overlap_add_frames(
     frame_length: int,
     hop_length: int,
     output_length: int | None = None,
+    frame_starts: np.ndarray | None = None,
 ) -> np.ndarray:
     """Average overlapping generated frames back into a finite waveform."""
     values = np.asarray(frames, dtype=np.float64)
@@ -90,14 +121,24 @@ def overlap_add_frames(
         raise ValueError(f"frames must have shape (T, {frame_length})")
     if frame_length <= 0 or hop_length <= 0 or not np.all(np.isfinite(values)):
         raise ValueError("frames must be finite and frame/hop lengths must be positive")
-    natural_length = (values.shape[0] - 1) * hop_length + frame_length
+    if frame_starts is None:
+        starts = np.arange(values.shape[0], dtype=np.int64) * hop_length
+    else:
+        raw_starts = np.asarray(frame_starts)
+        if raw_starts.ndim != 1 or raw_starts.shape[0] != values.shape[0]:
+            raise ValueError(f"frame_starts must have shape ({values.shape[0]},)")
+        if not np.all(np.isfinite(raw_starts)) or not np.all(raw_starts == np.floor(raw_starts)):
+            raise ValueError("frame_starts must contain finite integer sample offsets")
+        starts = raw_starts.astype(np.int64)
+        if np.any(starts < 0) or np.any(np.diff(starts) < 0):
+            raise ValueError("frame_starts must be non-negative and non-decreasing")
+    natural_length = int(starts[-1]) + frame_length
     length = natural_length if output_length is None else int(output_length)
     if length <= 0:
         raise ValueError("output_length must be positive")
     waveform = np.zeros(max(length, natural_length), dtype=np.float64)
     weights = np.zeros_like(waveform)
-    for index, frame in enumerate(values):
-        start = index * hop_length
+    for start, frame in zip(starts.tolist(), values, strict=True):
         stop = start + frame_length
         waveform[start:stop] += frame
         weights[start:stop] += 1.0
@@ -116,7 +157,12 @@ def build_rawfeat_input(
         peak = float(np.max(np.abs(y)))
         if peak > 0.0:
             y = y / max(peak, 1e-8)
-    raw_frames, mask = frame_waveform(y, feature_config.frame_length, feature_config.hop_length)
+    raw_frames, mask, frame_starts = frame_waveform(
+        y,
+        feature_config.frame_length,
+        feature_config.hop_length,
+        return_starts=True,
+    )
     features, feature_names = extract_frame_features(audio_path, **asdict(feature_config))
     if raw_frames.shape[0] != features.shape[0]:
         raise RuntimeError(
@@ -128,6 +174,8 @@ def build_rawfeat_input(
         "audio_path": str(Path(audio_path)),
         "sample_rate": sample_rate,
         "waveform_length": int(y.size),
+        "original_waveform_length": int(y.size),
+        "frame_starts": frame_starts.tolist(),
         "duration_sec": float(y.size / sample_rate),
         "frame_length": int(feature_config.frame_length),
         "hop_length": int(feature_config.hop_length),

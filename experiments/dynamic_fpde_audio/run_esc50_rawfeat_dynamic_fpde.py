@@ -239,6 +239,7 @@ def _generate_and_audit(
     raw: np.ndarray,
     features: np.ndarray,
     mask: np.ndarray,
+    input_metadata: dict[str, Any],
     original_result: Any,
     feature_config: FeatureConfig,
     lambda_hyb: float,
@@ -259,7 +260,15 @@ def _generate_and_audit(
     generated_frames = np.asarray(generated_meta["raw"], dtype=np.float64)
     if generated_frames.shape != raw.shape:
         raise RuntimeError(f"generated raw shape mismatch: {generated_frames.shape} vs {raw.shape}")
-    waveform = overlap_add_frames(generated_frames, feature_config.frame_length, feature_config.hop_length)
+    frame_starts = np.asarray(input_metadata["frame_starts"], dtype=np.int64)
+    waveform_length = int(input_metadata["waveform_length"])
+    waveform = overlap_add_frames(
+        generated_frames,
+        feature_config.frame_length,
+        feature_config.hop_length,
+        output_length=waveform_length,
+        frame_starts=frame_starts,
+    )
     wav_path = method_dir / "generated_target.wav"
     method_dir.mkdir(parents=True, exist_ok=True)
     sf.write(str(wav_path), waveform, feature_config.target_sr, subtype="FLOAT")
@@ -419,6 +428,7 @@ def run_fold(
                     raw=raw,
                     features=features,
                     mask=mask,
+                    input_metadata=metadata,
                     original_result=result,
                     feature_config=feature_config,
                     lambda_hyb=lambda_hyb,

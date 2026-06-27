@@ -23,6 +23,10 @@ shorter than one frame is zero-padded only to create one frame. Longer clips
 remain variable-length, and an end-aligned final frame is included when a
 partial tail would otherwise be dropped.
 
+The representation metadata records the exact `frame_starts` sample offsets
+and the resampled source `waveform_length`. This matters for an end-aligned
+final frame, whose start may differ from `frame_index * hop_length`.
+
 There is no global fixed-length temporal resampling. Padding across samples is
 used only inside the FPDE batch representation and is accompanied by a boolean
 mask. `dt[0]` is zero and later entries are finite frame-time increments.
@@ -67,7 +71,8 @@ is fit on training raw frames, labels, acoustic features, and masks. It creates
 
 Generated RAW is for inspection and audit only. It is not fed back into the
 original explanation and is not evidence of faithful waveform reconstruction.
-The runner overlap-adds the frames, saves `generated_target.wav`, reads that WAV
+The runner overlap-adds the frames at the source sample's exact `frame_starts`,
+trims to its `waveform_length`, saves `generated_target.wav`, reads that WAV
 again, re-extracts acoustic features, and only then calls
 `DynamicFPDEEngine.explain_one` for the generated audit.
 

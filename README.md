@@ -24,11 +24,18 @@ python -m pytest
 ```
 
 RawFeat itself is NumPy/SciPy/SoundFile based and adds no deep-learning
-dependency. Existing comparison experiments retain their original PyTorch and
-CuPy extras. CUDA 13 comparison runs can be installed with:
+dependency. The normal RawFeat installation therefore does not install
+PyTorch or TorchAudio. Install them only for comparison runners that require
+the legacy audio stack:
 
 ```bash
-python -m pip install -e ".[dev,dynamic-audio,plot,cuda]"
+python -m pip install -e ".[dev,dynamic-audio,plot,legacy-audio]"
+```
+
+CUDA 13 comparison runs can additionally be installed with:
+
+```bash
+python -m pip install -e ".[dev,dynamic-audio,plot,legacy-audio,cuda]"
 ```
 
 ## RawFeat ESC-50 runs
@@ -66,7 +73,8 @@ python experiments/dynamic_fpde_audio/run_esc50_rawfeat_dynamic_fpde.py \
 `--normalize l1` affects exported time-importance figures only; the audit CSV
 always stores the engine's unmodified evidence and attribution sum. Generated
 RAW is an inspection/audit artifact, not an explanation input. The runner
-overlap-adds generated raw frames to a waveform, saves `generated_target.wav`,
+overlap-adds generated raw frames at the original sample's exact frame starts,
+restores the original resampled waveform length, saves `generated_target.wav`,
 then re-runs that waveform through the acoustic feature extractor before its
 generated-sample audit.
 

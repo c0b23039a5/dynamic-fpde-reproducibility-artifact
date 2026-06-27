@@ -74,6 +74,9 @@ def test_build_rawfeat_input_has_matching_time_axes(tmp_path: Path):
     assert metadata["sample_rate"] == 4000
     assert metadata["original_waveform_length"] == metadata["waveform_length"]
     assert len(metadata["frame_starts"]) == raw.shape[0]
+    timestamps = np.asarray(metadata["frame_starts"], dtype=float) / metadata["sample_rate"]
+    np.testing.assert_allclose(dt, np.diff(timestamps, prepend=timestamps[0]))
+    assert dt[-1] != pytest.approx(13 / 4000)
 
 
 def test_overlap_add_frames_returns_finite_waveform():

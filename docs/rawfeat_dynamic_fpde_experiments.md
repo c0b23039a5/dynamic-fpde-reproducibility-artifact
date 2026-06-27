@@ -29,7 +29,9 @@ final frame, whose start may differ from `frame_index * hop_length`.
 
 There is no global fixed-length temporal resampling. Padding across samples is
 used only inside the FPDE batch representation and is accompanied by a boolean
-mask. `dt[0]` is zero and later entries are finite frame-time increments.
+mask. Timestamps are the exact `frame_starts / sample_rate`; `dt` is their
+first difference, with `dt[0]` set to zero. This preserves the shorter final
+increment when the last frame is end-aligned rather than hop-aligned.
 
 The engine fits masked class prototypes over concatenated raw, feature, and
 time-delta channels. For every explanation, the runner checks:
@@ -114,13 +116,44 @@ samples/<sample_id>/rawfeat_hyb_lambda_<lambda>/time_importance.png   # optional
 With `--skip-errors`, failures are isolated and written to
 `results/rawfeat_errors.csv`. Without it, the first failure stops the run.
 
-## Interpretation limits
+## IEEE Access result interpretation
 
-RawFeat Dynamic-FPDE is a prototype evidence decomposition. It is not a causal
-or ground-truth explanation, does not establish black-box classifier
-faithfulness, and does not claim raw-waveform attribution beyond the stated
-concatenated-representation evidence. Generated audio is an inspection/audit
-surface only.
+The exactness audit checks the numerical identity between each sample's scalar
+prototype-contrast evidence and the sum of all reported attributions. A
+shape-match rate and audit-pass rate of one, together with a near-zero maximum
+absolute residual, establish internal decomposition consistency. They do not
+validate the semantic correctness of the explanation.
+
+Positive evidence means that the explained sample supports the target-class
+prototype over the selected rival under the configured RawFeat hybrid metric.
+Negative evidence means that the same contrast favors the rival prototype. It
+is therefore a signed prototype-comparison result, not a failed audit, an
+incorrect prediction, or negative feature importance in isolation.
+
+Raw, acoustic-feature, and time-delta group attributions are sums over their
+respective channel slices. Their signs indicate how each representation group
+contributes to the target-versus-rival evidence, and the three group values sum
+to the scalar evidence up to the exactness tolerance. Their magnitudes should
+be compared in the context of representation dimensionality and the configured
+distance normalization; they are not causal effect sizes.
+
+These results are neither causal explanations nor ground-truth explanations.
+They also do not measure faithfulness to an independently trained black-box
+classifier: the explained quantity is the RawFeat prototype contrast itself.
+Generated audio remains an inspection/audit surface only.
+
+Generate the IEEE Access tables and figures from the full sample CSV with:
+
+```bash
+python scripts/make_rawfeat_ieee_tables.py
+```
+
+Run the fixed hybrid-lambda grid (`0`, `0.25`, `0.5`, `0.75`, `1`) in full
+mode over folds 1--5, with generation disabled, and aggregate it with:
+
+```bash
+python scripts/run_rawfeat_lambda_sensitivity.py --dataset-root data/ESC-50
+```
 
 The Raw-Waveform-only workflow is preserved as a legacy/comparison runner, and
 the Native-Time feature-only workflow is preserved as a comparison runner. See

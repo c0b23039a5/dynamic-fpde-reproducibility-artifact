@@ -168,7 +168,7 @@ def build_rawfeat_input(
         raise RuntimeError(
             f"raw/features time mismatch: {raw_frames.shape[0]} vs {features.shape[0]}"
         )
-    timestamps = frame_times_sec(raw_frames.shape[0], feature_config.hop_length, sample_rate)
+    timestamps = frame_starts.astype(np.float64) / float(sample_rate)
     dt = make_dt(timestamps)
     metadata: dict[str, Any] = {
         "audio_path": str(Path(audio_path)),

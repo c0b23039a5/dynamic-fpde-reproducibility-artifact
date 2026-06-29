@@ -64,3 +64,62 @@ def test_group_local_bayesian_rawfeat_runner_smoke(tmp_path: Path) -> None:
     config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
     assert config["global_temporal_resampling"] is False
     assert config["uses_original_song_data"] is False
+
+
+def test_group_local_low_memory_preserves_native_time_and_skips_coordinates(
+    tmp_path: Path,
+) -> None:
+    _write_rawfeat(tmp_path / "like.npz", seed=10, time_length=4)
+    _write_rawfeat(tmp_path / "dislike.npz", seed=11, time_length=7)
+    input_csv = tmp_path / "group_local_runner_input.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "like", "cover_group_id": "g", "label": "Like", "rawfeat_npz_path": "like.npz", "rel_path": "covers/like", "eligible_group_local": True},
+            {"sample_id": "dislike", "cover_group_id": "g", "label": "Dislike", "rawfeat_npz_path": "dislike.npz", "rel_path": "covers/dislike", "eligible_group_local": True},
+        ]
+    ).to_csv(input_csv, index=False)
+
+    output_dir = tmp_path / "low-memory"
+    assert main([
+        "--input-csv", str(input_csv), "--output-dir", str(output_dir),
+        "--n-samples", "5", "--low-memory", "--save-attributions",
+    ]) == 0
+
+    result_path = output_dir / "results" / "per_sample_hyb.csv"
+    assert result_path.exists()
+    result = pd.read_csv(result_path)
+    assert dict(zip(result["sample_id"], result["T"])) == {"like": 4, "dislike": 7}
+    scalar_columns = [
+        "evidence_mean", "evidence_ci_low", "evidence_ci_high",
+        "evidence_probability_positive", "evidence_sign_stability",
+        "raw_group_mean", "raw_group_ci_low", "raw_group_ci_high",
+        "feature_group_mean", "feature_group_ci_low", "feature_group_ci_high",
+        "dt_group_mean", "dt_group_ci_low", "dt_group_ci_high",
+        "max_abs_exactness_residual", "mean_abs_exactness_residual",
+        "max_abs_group_sum_residual",
+    ]
+    assert np.isfinite(result[scalar_columns].to_numpy(dtype=float)).all()
+    assert not list((output_dir / "attributions").glob("*.npz"))
+
+    config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
+    assert config["low_memory_streaming"] is True
+    assert config["global_temporal_resampling"] is False
+
+
+def test_low_memory_coordinate_summary_requires_explicit_flag(tmp_path: Path) -> None:
+    _write_rawfeat(tmp_path / "like.npz", seed=20, time_length=3)
+    _write_rawfeat(tmp_path / "dislike.npz", seed=21, time_length=5)
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "like", "cover_group_id": "g", "label": "Like", "rawfeat_npz_path": "like.npz", "rel_path": "like", "eligible_group_local": True},
+            {"sample_id": "dislike", "cover_group_id": "g", "label": "Dislike", "rawfeat_npz_path": "dislike.npz", "rel_path": "dislike", "eligible_group_local": True},
+        ]
+    ).to_csv(input_csv, index=False)
+
+    output_dir = tmp_path / "coordinate-opt-in"
+    assert main([
+        "--input-csv", str(input_csv), "--output-dir", str(output_dir),
+        "--n-samples", "5", "--low-memory", "--save-coordinate-summary",
+    ]) == 0
+    assert (output_dir / "attributions" / "g__like__hyb_summary.npz").exists()

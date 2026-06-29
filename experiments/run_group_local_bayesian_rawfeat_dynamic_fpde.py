@@ -8,9 +8,11 @@ prototype-evidence decompositions, not causal or ground-truth attributions.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -20,6 +22,7 @@ import pandas as pd
 from fpde.dynamic import (
     RawFeatSequence,
     bayesian_rawfeat_dynamic_fpde_explain_one,
+    build_rawfeat_matrix,
     fit_bayesian_rawfeat_prototypes,
 )
 
@@ -32,8 +35,9 @@ PER_SAMPLE_COLUMNS = [
     "raw_group_mean", "raw_group_ci_low", "raw_group_ci_high",
     "feature_group_mean", "feature_group_ci_low", "feature_group_ci_high",
     "dt_group_mean", "dt_group_ci_low", "dt_group_ci_high",
-    "max_abs_exactness_residual", "mean_abs_exactness_residual", "T", "D",
-    "raw_dim", "feature_dim", "dt_dim", "rawfeat_npz_path",
+    "max_abs_exactness_residual", "mean_abs_exactness_residual",
+    "max_abs_group_sum_residual", "T", "D", "raw_dim", "feature_dim",
+    "dt_dim", "rawfeat_npz_path",
 ]
 
 GROUP_SUMMARY_COLUMNS = [
@@ -61,6 +65,28 @@ ERROR_COLUMNS = [
 AUDIT_TOLERANCE = 1e-8
 
 
+@dataclass(frozen=True)
+class _ScalarPosteriorSummary:
+    mean: float
+    credible_interval: tuple[float, float]
+    probability_positive: float
+    sign_stability: float
+    posterior: np.ndarray
+
+
+@dataclass(frozen=True)
+class _LowMemoryMethodSummary:
+    evidence: _ScalarPosteriorSummary
+    raw_group_attribution: _ScalarPosteriorSummary
+    feature_group_attribution: _ScalarPosteriorSummary
+    dt_group_attribution: _ScalarPosteriorSummary
+    exactness_residuals: np.ndarray
+
+    @property
+    def evidence_posterior(self) -> np.ndarray:
+        return self.evidence.posterior
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-csv", type=Path, default=Path("group_local_runner_input.csv"))
@@ -81,6 +107,24 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-groups", type=int)
     parser.add_argument("--max-samples-per-group", type=int)
     parser.add_argument("--save-attributions", action="store_true")
+    parser.add_argument(
+        "--low-memory",
+        action="store_true",
+        help="stream posterior draws and retain scalar/group summaries only",
+    )
+    parser.add_argument(
+        "--save-coordinate-summary",
+        action="store_true",
+        help="explicitly compute and save (T, D) coordinate summaries; increases RAM use",
+    )
+    parser.add_argument(
+        "--max-frames-for-debug",
+        type=int,
+        help=(
+            "truncate every sequence to its first N frames for smoke/debug runs only; "
+            "must not be used for final reported results"
+        ),
+    )
     parser.add_argument("--random-state", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args(argv)
@@ -92,6 +136,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--max-groups must be positive")
     if args.max_samples_per_group is not None and args.max_samples_per_group <= 0:
         parser.error("--max-samples-per-group must be positive")
+    if args.max_frames_for_debug is not None and args.max_frames_for_debug <= 0:
+        parser.error("--max-frames-for-debug must be positive")
     if not 0.0 <= args.lambda_hyb <= 1.0:
         parser.error("--lambda-hyb must be in [0, 1]")
     if args.target_label == args.rival_label:
@@ -115,13 +161,15 @@ def _resolve_npz_path(value: Any, input_csv: Path) -> Path:
     return path if path.is_absolute() else input_csv.resolve().parent / path
 
 
-def _load_sequence(path: Path) -> tuple[RawFeatSequence, np.ndarray]:
+def _load_sequence(
+    path: Path, max_frames_for_debug: int | None = None
+) -> tuple[RawFeatSequence, np.ndarray]:
     with np.load(path, allow_pickle=False) as data:
         missing = [name for name in ("raw", "features", "dt", "mask", "frame_starts") if name not in data]
         if missing:
             raise ValueError(f"missing NPZ arrays: {', '.join(missing)}")
-        raw = np.asarray(data["raw"], dtype=float)
-        features = np.asarray(data["features"], dtype=float)
+        raw = np.asarray(data["raw"], dtype=np.float32)
+        features = np.asarray(data["features"], dtype=np.float32)
         dt = np.asarray(data["dt"], dtype=float)
         mask = np.asarray(data["mask"])
         frame_starts = np.asarray(data["frame_starts"])
@@ -148,7 +196,132 @@ def _load_sequence(path: Path) -> tuple[RawFeatSequence, np.ndarray]:
         raise ValueError("features contains NaN or inf on valid frames")
     if not np.all(np.isfinite(dt[valid])):
         raise ValueError("dt contains NaN or inf on valid frames")
+    if max_frames_for_debug is not None:
+        stop = min(max_frames_for_debug, raw.shape[0])
+        raw = raw[:stop]
+        features = features[:stop]
+        dt = dt[:stop]
+        valid = valid[:stop]
+        frame_starts = frame_starts[:stop]
+        if not np.any(valid):
+            raise ValueError("debug frame truncation removed all valid frames")
     return RawFeatSequence(raw=raw, features=features, dt=dt, mask=valid), frame_starts
+
+
+def _scalar_summary(values: np.ndarray) -> _ScalarPosteriorSummary:
+    posterior = np.asarray(values, dtype=np.float64)
+    interval = np.quantile(posterior, [0.025, 0.975])
+    probability_positive = float(np.mean(posterior > 0.0))
+    probability_negative = float(np.mean(posterior < 0.0))
+    return _ScalarPosteriorSummary(
+        mean=float(np.mean(posterior, dtype=np.float64)),
+        credible_interval=(float(interval[0]), float(interval[1])),
+        probability_positive=probability_positive,
+        sign_stability=max(probability_positive, probability_negative),
+        posterior=posterior,
+    )
+
+
+def _label_index(posterior: Any, label: Any, name: str) -> int:
+    matches = np.flatnonzero(np.asarray(posterior.prototype_labels) == label)
+    if matches.size == 0:
+        raise ValueError(f"no posterior prototype found for {name}={label!r}")
+    return int(matches[0])
+
+
+def _low_memory_hyb_summary(
+    sequence: RawFeatSequence,
+    posterior: Any,
+    *,
+    target_label: Any,
+    rival_label: Any,
+    lambda_hyb: float,
+    normalize: str,
+    eps: float = 1e-12,
+) -> _LowMemoryMethodSummary:
+    """Reduce one attribution draw at a time without a posterior (N, T, D) array."""
+    target_index = _label_index(posterior, target_label, "target_label")
+    rival_index = _label_index(posterior, rival_label, "rival_label")
+    if target_label == rival_label:
+        raise ValueError("target_label and rival_label must differ")
+
+    # fpde validates and applies the training-fitted transform once.  The
+    # coordinate matrix is then held as float32; all reported sums use float64.
+    matrix = build_rawfeat_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
+    mask = np.asarray(sequence.mask, dtype=bool)
+    valid_matrix = np.ascontiguousarray(matrix[mask], dtype=np.float32)
+    del matrix
+
+    n_draws = int(posterior.n_samples)
+    evidence_draws = np.empty(n_draws, dtype=np.float64)
+    raw_draws = np.empty(n_draws, dtype=np.float64)
+    feature_draws = np.empty(n_draws, dtype=np.float64)
+    dt_draws = np.empty(n_draws, dtype=np.float64)
+    exactness_draws = np.empty(n_draws, dtype=np.float64)
+    raw_slice = posterior.feature_slices["raw"]
+    feature_slice = posterior.feature_slices["features"]
+    dt_slice = posterior.feature_slices["dt"]
+
+    row_norms = np.linalg.norm(valid_matrix, axis=1).astype(np.float32, copy=False)
+    for draw in range(n_draws):
+        target = np.asarray(posterior.prototypes[draw, target_index], dtype=np.float32)
+        rival = np.asarray(posterior.prototypes[draw, rival_index], dtype=np.float32)
+
+        # Algebraically identical Dynamic-Diff, formed as one float32 matrix.
+        diff_direction = target - rival
+        diff_offset = rival * rival - target * target
+        attribution = valid_matrix * diff_direction
+        attribution *= np.float32(2.0)
+        attribution += diff_offset
+        if normalize == "l1":
+            diff_scale = float(np.sum(np.abs(attribution), dtype=np.float64) + eps)
+        else:
+            diff_scale = 1.0
+        attribution *= np.float32(lambda_hyb / diff_scale)
+
+        # The cosine contrast has a single direction vector, so it also needs
+        # only one draw-sized temporary instead of separate target/rival parts.
+        target_norm = float(np.linalg.norm(target))
+        rival_norm = float(np.linalg.norm(rival))
+        cosine_direction = target / np.float32(target_norm + eps)
+        cosine_direction -= rival / np.float32(rival_norm + eps)
+        cosine_attribution = valid_matrix * cosine_direction
+        cosine_attribution /= (row_norms[:, None] + np.float32(eps))
+        if normalize == "l1":
+            cosine_scale = float(np.sum(np.abs(cosine_attribution), dtype=np.float64) + eps)
+        else:
+            cosine_scale = 1.0
+        cosine_attribution *= np.float32((1.0 - lambda_hyb) / cosine_scale)
+        attribution += cosine_attribution
+
+        evidence = float(np.sum(attribution, dtype=np.float64))
+        raw_sum = float(np.sum(attribution[:, raw_slice], dtype=np.float64))
+        feature_sum = float(np.sum(attribution[:, feature_slice], dtype=np.float64))
+        dt_sum = float(np.sum(attribution[:, dt_slice], dtype=np.float64))
+        evidence_draws[draw] = evidence
+        raw_draws[draw] = raw_sum
+        feature_draws[draw] = feature_sum
+        dt_draws[draw] = dt_sum
+        exactness_draws[draw] = evidence - float(np.sum(attribution, dtype=np.float64))
+
+        del (
+            target,
+            rival,
+            diff_direction,
+            diff_offset,
+            attribution,
+            cosine_direction,
+            cosine_attribution,
+        )
+
+    del valid_matrix, row_norms
+    return _LowMemoryMethodSummary(
+        evidence=_scalar_summary(evidence_draws),
+        raw_group_attribution=_scalar_summary(raw_draws),
+        feature_group_attribution=_scalar_summary(feature_draws),
+        dt_group_attribution=_scalar_summary(dt_draws),
+        exactness_residuals=exactness_draws,
+    )
 
 
 def _posterior_fields(prefix: str, summary: Any) -> dict[str, float]:
@@ -260,7 +433,7 @@ def run(args: argparse.Namespace) -> int:
         for _, row in group.iterrows():
             path = _resolve_npz_path(row["rawfeat_npz_path"], input_csv)
             try:
-                sequence, frame_starts = _load_sequence(path)
+                sequence, frame_starts = _load_sequence(path, args.max_frames_for_debug)
                 loaded.append((row, sequence, frame_starts, path))
             except Exception as exc:  # isolate malformed samples without hiding them
                 errors.append({
@@ -304,17 +477,40 @@ def run(args: argparse.Namespace) -> int:
         group_rows: list[dict[str, Any]] = []
         group_audits: list[dict[str, Any]] = []
         group_evidence_posteriors: list[np.ndarray] = []
-        for row, sequence, frame_starts, path in loaded:
+        n_group_loaded = len(loaded)
+        sample_items: list[Any] = loaded
+        loaded = []
+        del sequences
+        for item_index, item in enumerate(sample_items):
+            row, sequence, frame_starts, path = item
+            result = None
+            method = None
+            exact = None
+            group_sum_residual = None
             try:
-                result = bayesian_rawfeat_dynamic_fpde_explain_one(
-                    sequence,
-                    posterior,
-                    target_label=args.target_label,
-                    rival_label=args.rival_label,
-                    lambda_hyb=args.lambda_hyb,
-                    normalize=args.normalize,
+                coordinate_summary_requested = bool(
+                    args.save_coordinate_summary or (args.save_attributions and not args.low_memory)
                 )
-                method = result.hyb
+                if args.low_memory and not coordinate_summary_requested:
+                    result = None
+                    method = _low_memory_hyb_summary(
+                        sequence,
+                        posterior,
+                        target_label=args.target_label,
+                        rival_label=args.rival_label,
+                        lambda_hyb=args.lambda_hyb,
+                        normalize=args.normalize,
+                    )
+                else:
+                    result = bayesian_rawfeat_dynamic_fpde_explain_one(
+                        sequence,
+                        posterior,
+                        target_label=args.target_label,
+                        rival_label=args.rival_label,
+                        lambda_hyb=args.lambda_hyb,
+                        normalize=args.normalize,
+                    )
+                    method = result.hyb
                 exact = np.asarray(method.exactness_residuals, dtype=float)
                 group_sum_residual = (
                     np.asarray(method.raw_group_attribution.posterior)
@@ -339,7 +535,7 @@ def run(args: argparse.Namespace) -> int:
                 sample_row = {
                     "cover_group_id": group_id, "sample_id": row["sample_id"],
                     "label": row["label"], "method": "hyb",
-                    "n_group_samples": len(loaded), "n_like": n_like, "n_dislike": n_dislike,
+                    "n_group_samples": n_group_loaded, "n_like": n_like, "n_dislike": n_dislike,
                     "n_posterior_samples": int(np.asarray(method.evidence.posterior).size),
                     "lambda_hyb": args.lambda_hyb,
                     **_posterior_fields("evidence", method.evidence),
@@ -350,6 +546,7 @@ def run(args: argparse.Namespace) -> int:
                     **_posterior_fields("dt_group", method.dt_group_attribution),
                     "max_abs_exactness_residual": audit["max_abs_exactness_residual"],
                     "mean_abs_exactness_residual": audit["mean_abs_exactness_residual"],
+                    "max_abs_group_sum_residual": audit["max_abs_group_sum_residual"],
                     "T": int(sequence.raw.shape[0]),
                     "D": int(sequence.raw.shape[1] + sequence.features.shape[1] + 1),
                     "raw_dim": int(sequence.raw.shape[1]),
@@ -360,7 +557,8 @@ def run(args: argparse.Namespace) -> int:
                 group_rows.append(sample_row)
                 group_audits.append(audit)
                 group_evidence_posteriors.append(np.asarray(method.evidence_posterior, dtype=float))
-                if args.save_attributions:
+                if coordinate_summary_requested:
+                    assert result is not None
                     _save_attribution(
                         output_dir, group_id, row["sample_id"], method, result.mask, frame_starts
                     )
@@ -370,6 +568,10 @@ def run(args: argparse.Namespace) -> int:
                     "rawfeat_npz_path": str(path), "stage": "explain",
                     "error_type": type(exc).__name__, "error": str(exc),
                 })
+            finally:
+                sample_items[item_index] = None
+                del result, method, exact, group_sum_residual, sequence, frame_starts, item
+                gc.collect()
 
         if group_rows:
             group_evidence = np.mean(np.stack(group_evidence_posteriors, axis=0), axis=0)
@@ -388,6 +590,8 @@ def run(args: argparse.Namespace) -> int:
             })
             per_sample.extend(group_rows)
             audits.extend(group_audits)
+        del posterior, sample_items
+        gc.collect()
 
     results_dir = output_dir / "results"
     _write_csv(results_dir / "per_sample_hyb.csv", per_sample, PER_SAMPLE_COLUMNS)
@@ -402,6 +606,15 @@ def run(args: argparse.Namespace) -> int:
         "interpretation": "group-local Like-vs-Dislike prototype-evidence decomposition",
         "causal_explanation": False, "ground_truth_attribution": False,
         "uses_original_song_data": False, "global_temporal_resampling": False,
+        "low_memory_streaming": bool(args.low_memory and not args.save_coordinate_summary),
+        "coordinate_summary_saved": bool(
+            args.save_coordinate_summary or (args.save_attributions and not args.low_memory)
+        ),
+        "debug_frame_truncation": args.max_frames_for_debug is not None,
+        "debug_only_warning": (
+            "--max-frames-for-debug truncates native sequences and must not be used for final reported results"
+            if args.max_frames_for_debug is not None else None
+        ),
         "n_input_rows_after_filtering": int(len(frame)),
         "n_groups_considered": len(group_ids), "n_samples_completed": len(per_sample),
     })

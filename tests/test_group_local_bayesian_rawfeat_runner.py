@@ -5,8 +5,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from experiments.run_group_local_bayesian_rawfeat_dynamic_fpde import main
+
+
+def _cuda_available() -> bool:
+    try:
+        import cupy as cp
+
+        return int(cp.cuda.runtime.getDeviceCount()) > 0
+    except Exception:
+        return False
 
 
 def _write_rawfeat(path: Path, *, seed: int, time_length: int) -> None:
@@ -123,3 +133,28 @@ def test_low_memory_coordinate_summary_requires_explicit_flag(tmp_path: Path) ->
         "--n-samples", "5", "--low-memory", "--save-coordinate-summary",
     ]) == 0
     assert (output_dir / "attributions" / "g__like__hyb_summary.npz").exists()
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="CuPy CUDA device is unavailable")
+def test_low_memory_cuda_smoke(tmp_path: Path) -> None:
+    _write_rawfeat(tmp_path / "like.npz", seed=30, time_length=4)
+    _write_rawfeat(tmp_path / "dislike.npz", seed=31, time_length=6)
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "like", "cover_group_id": "gpu", "label": "Like", "rawfeat_npz_path": "like.npz", "rel_path": "like", "eligible_group_local": True},
+            {"sample_id": "dislike", "cover_group_id": "gpu", "label": "Dislike", "rawfeat_npz_path": "dislike.npz", "rel_path": "dislike", "eligible_group_local": True},
+        ]
+    ).to_csv(input_csv, index=False)
+
+    output_dir = tmp_path / "cuda"
+    assert main([
+        "--input-csv", str(input_csv), "--output-dir", str(output_dir),
+        "--n-samples", "5", "--device", "cuda",
+    ]) == 0
+    result = pd.read_csv(output_dir / "results" / "per_sample_hyb.csv")
+    assert dict(zip(result["sample_id"], result["T"])) == {"like": 4, "dislike": 6}
+    assert np.isfinite(result["evidence_mean"]).all()
+    config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
+    assert config["device"] == "cuda"
+    assert config["cuda_device_name"]

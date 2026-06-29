@@ -113,6 +113,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="stream posterior draws and retain scalar/group summaries only",
     )
     parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda"),
+        default="cpu",
+        help=(
+            "compute attribution draws on CPU or with CuPy on an NVIDIA GPU; "
+            "CUDA automatically uses the streaming low-memory path"
+        ),
+    )
+    parser.add_argument(
         "--save-coordinate-summary",
         action="store_true",
         help="explicitly compute and save (T, D) coordinate summaries; increases RAM use",
@@ -222,6 +231,31 @@ def _scalar_summary(values: np.ndarray) -> _ScalarPosteriorSummary:
     )
 
 
+def _ensure_cuda_backend() -> Any:
+    try:
+        import cupy as cp  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "--device cuda requires CuPy. For CUDA 13, install cupy-cuda13x."
+        ) from exc
+    try:
+        device_count = int(cp.cuda.runtime.getDeviceCount())
+    except Exception as exc:
+        raise RuntimeError(
+            "--device cuda was requested, but CuPy cannot access a usable CUDA runtime/device."
+        ) from exc
+    if device_count < 1:
+        raise RuntimeError("--device cuda was requested, but CuPy reports no CUDA devices.")
+    return cp
+
+
+def _free_cuda_memory_pool() -> None:
+    import cupy as cp  # type: ignore[import-not-found]
+
+    cp.get_default_memory_pool().free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
+
+
 def _label_index(posterior: Any, label: Any, name: str) -> int:
     matches = np.flatnonzero(np.asarray(posterior.prototype_labels) == label)
     if matches.size == 0:
@@ -237,6 +271,7 @@ def _low_memory_hyb_summary(
     rival_label: Any,
     lambda_hyb: float,
     normalize: str,
+    device: str,
     eps: float = 1e-12,
 ) -> _LowMemoryMethodSummary:
     """Reduce one attribution draw at a time without a posterior (N, T, D) array."""
@@ -247,10 +282,14 @@ def _low_memory_hyb_summary(
 
     # fpde validates and applies the training-fitted transform once.  The
     # coordinate matrix is then held as float32; all reported sums use float64.
+    xp = np if device == "cpu" else _ensure_cuda_backend()
     matrix = build_rawfeat_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
     mask = np.asarray(sequence.mask, dtype=bool)
-    valid_matrix = np.ascontiguousarray(matrix[mask], dtype=np.float32)
-    del matrix
+    valid_matrix_cpu = np.ascontiguousarray(matrix[mask], dtype=np.float32)
+    del matrix, mask
+    valid_matrix = valid_matrix_cpu if device == "cpu" else xp.asarray(valid_matrix_cpu)
+    if device == "cuda":
+        del valid_matrix_cpu
 
     n_draws = int(posterior.n_samples)
     evidence_draws = np.empty(n_draws, dtype=np.float64)
@@ -262,47 +301,51 @@ def _low_memory_hyb_summary(
     feature_slice = posterior.feature_slices["features"]
     dt_slice = posterior.feature_slices["dt"]
 
-    row_norms = np.linalg.norm(valid_matrix, axis=1).astype(np.float32, copy=False)
+    row_norms = xp.linalg.norm(valid_matrix, axis=1).astype(xp.float32, copy=False)
     for draw in range(n_draws):
-        target = np.asarray(posterior.prototypes[draw, target_index], dtype=np.float32)
-        rival = np.asarray(posterior.prototypes[draw, rival_index], dtype=np.float32)
+        target = xp.asarray(posterior.prototypes[draw, target_index], dtype=xp.float32)
+        rival = xp.asarray(posterior.prototypes[draw, rival_index], dtype=xp.float32)
 
         # Algebraically identical Dynamic-Diff, formed as one float32 matrix.
         diff_direction = target - rival
         diff_offset = rival * rival - target * target
         attribution = valid_matrix * diff_direction
-        attribution *= np.float32(2.0)
+        attribution *= xp.float32(2.0)
         attribution += diff_offset
         if normalize == "l1":
-            diff_scale = float(np.sum(np.abs(attribution), dtype=np.float64) + eps)
+            diff_scale = float((xp.sum(xp.abs(attribution), dtype=xp.float64) + eps).item())
         else:
             diff_scale = 1.0
-        attribution *= np.float32(lambda_hyb / diff_scale)
+        attribution *= xp.float32(lambda_hyb / diff_scale)
 
         # The cosine contrast has a single direction vector, so it also needs
         # only one draw-sized temporary instead of separate target/rival parts.
-        target_norm = float(np.linalg.norm(target))
-        rival_norm = float(np.linalg.norm(rival))
-        cosine_direction = target / np.float32(target_norm + eps)
-        cosine_direction -= rival / np.float32(rival_norm + eps)
+        target_norm = float(xp.linalg.norm(target).item())
+        rival_norm = float(xp.linalg.norm(rival).item())
+        cosine_direction = target / xp.float32(target_norm + eps)
+        cosine_direction -= rival / xp.float32(rival_norm + eps)
         cosine_attribution = valid_matrix * cosine_direction
-        cosine_attribution /= (row_norms[:, None] + np.float32(eps))
+        cosine_attribution /= (row_norms[:, None] + xp.float32(eps))
         if normalize == "l1":
-            cosine_scale = float(np.sum(np.abs(cosine_attribution), dtype=np.float64) + eps)
+            cosine_scale = float(
+                (xp.sum(xp.abs(cosine_attribution), dtype=xp.float64) + eps).item()
+            )
         else:
             cosine_scale = 1.0
-        cosine_attribution *= np.float32((1.0 - lambda_hyb) / cosine_scale)
+        cosine_attribution *= xp.float32((1.0 - lambda_hyb) / cosine_scale)
         attribution += cosine_attribution
 
-        evidence = float(np.sum(attribution, dtype=np.float64))
-        raw_sum = float(np.sum(attribution[:, raw_slice], dtype=np.float64))
-        feature_sum = float(np.sum(attribution[:, feature_slice], dtype=np.float64))
-        dt_sum = float(np.sum(attribution[:, dt_slice], dtype=np.float64))
+        evidence = float(xp.sum(attribution, dtype=xp.float64).item())
+        raw_sum = float(xp.sum(attribution[:, raw_slice], dtype=xp.float64).item())
+        feature_sum = float(xp.sum(attribution[:, feature_slice], dtype=xp.float64).item())
+        dt_sum = float(xp.sum(attribution[:, dt_slice], dtype=xp.float64).item())
         evidence_draws[draw] = evidence
         raw_draws[draw] = raw_sum
         feature_draws[draw] = feature_sum
         dt_draws[draw] = dt_sum
-        exactness_draws[draw] = evidence - float(np.sum(attribution, dtype=np.float64))
+        exactness_draws[draw] = evidence - float(
+            xp.sum(attribution, dtype=xp.float64).item()
+        )
 
         del (
             target,
@@ -395,6 +438,24 @@ def _save_attribution(
 def run(args: argparse.Namespace) -> int:
     input_csv = args.input_csv.resolve()
     output_dir = args.output_dir.resolve()
+    cuda_metadata: dict[str, Any] = {}
+    if args.device == "cuda":
+        if args.save_coordinate_summary:
+            raise ValueError(
+                "--save-coordinate-summary uses the CPU fpde posterior API and cannot be combined "
+                "with --device cuda"
+            )
+        cp = _ensure_cuda_backend()
+        properties = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
+        device_name = properties.get("name", "unknown")
+        if isinstance(device_name, bytes):
+            device_name = device_name.decode("utf-8", errors="replace")
+        cuda_metadata = {
+            "cupy_version": cp.__version__,
+            "cuda_device_id": int(cp.cuda.Device().id),
+            "cuda_device_name": str(device_name),
+            "cuda_runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
+        }
     _prepare_output(output_dir, args.overwrite)
 
     required = {"sample_id", "cover_group_id", "label", "rawfeat_npz_path", "rel_path"}
@@ -489,9 +550,10 @@ def run(args: argparse.Namespace) -> int:
             group_sum_residual = None
             try:
                 coordinate_summary_requested = bool(
-                    args.save_coordinate_summary or (args.save_attributions and not args.low_memory)
+                    args.save_coordinate_summary
+                    or (args.save_attributions and not args.low_memory and args.device == "cpu")
                 )
-                if args.low_memory and not coordinate_summary_requested:
+                if (args.low_memory or args.device == "cuda") and not coordinate_summary_requested:
                     result = None
                     method = _low_memory_hyb_summary(
                         sequence,
@@ -500,6 +562,7 @@ def run(args: argparse.Namespace) -> int:
                         rival_label=args.rival_label,
                         lambda_hyb=args.lambda_hyb,
                         normalize=args.normalize,
+                        device=args.device,
                     )
                 else:
                     result = bayesian_rawfeat_dynamic_fpde_explain_one(
@@ -572,6 +635,8 @@ def run(args: argparse.Namespace) -> int:
                 sample_items[item_index] = None
                 del result, method, exact, group_sum_residual, sequence, frame_starts, item
                 gc.collect()
+                if args.device == "cuda":
+                    _free_cuda_memory_pool()
 
         if group_rows:
             group_evidence = np.mean(np.stack(group_evidence_posteriors, axis=0), axis=0)
@@ -592,6 +657,8 @@ def run(args: argparse.Namespace) -> int:
             audits.extend(group_audits)
         del posterior, sample_items
         gc.collect()
+        if args.device == "cuda":
+            _free_cuda_memory_pool()
 
     results_dir = output_dir / "results"
     _write_csv(results_dir / "per_sample_hyb.csv", per_sample, PER_SAMPLE_COLUMNS)
@@ -606,9 +673,12 @@ def run(args: argparse.Namespace) -> int:
         "interpretation": "group-local Like-vs-Dislike prototype-evidence decomposition",
         "causal_explanation": False, "ground_truth_attribution": False,
         "uses_original_song_data": False, "global_temporal_resampling": False,
-        "low_memory_streaming": bool(args.low_memory and not args.save_coordinate_summary),
+        "low_memory_streaming": bool(
+            (args.low_memory or args.device == "cuda") and not args.save_coordinate_summary
+        ),
         "coordinate_summary_saved": bool(
-            args.save_coordinate_summary or (args.save_attributions and not args.low_memory)
+            args.save_coordinate_summary
+            or (args.save_attributions and not args.low_memory and args.device == "cpu")
         ),
         "debug_frame_truncation": args.max_frames_for_debug is not None,
         "debug_only_warning": (
@@ -617,6 +687,7 @@ def run(args: argparse.Namespace) -> int:
         ),
         "n_input_rows_after_filtering": int(len(frame)),
         "n_groups_considered": len(group_ids), "n_samples_completed": len(per_sample),
+        **cuda_metadata,
     })
     (output_dir / "logs" / "run_config.json").write_text(
         json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8"

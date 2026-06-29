@@ -1,0 +1,419 @@
+"""Run group-local Bayesian RawFeat Dynamic-FPDE evidence decompositions.
+
+The runner contrasts Like and Dislike cover-song prototypes within each
+``cover_group_id``.  It never loads original-song data and its outputs are
+prototype-evidence decompositions, not causal or ground-truth attributions.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+from pathlib import Path
+from typing import Any, Sequence
+
+import numpy as np
+import pandas as pd
+
+from fpde.dynamic import (
+    RawFeatSequence,
+    bayesian_rawfeat_dynamic_fpde_explain_one,
+    fit_bayesian_rawfeat_prototypes,
+)
+
+
+PER_SAMPLE_COLUMNS = [
+    "cover_group_id", "sample_id", "label", "method", "n_group_samples",
+    "n_like", "n_dislike", "n_posterior_samples", "lambda_hyb",
+    "evidence_mean", "evidence_ci_low", "evidence_ci_high",
+    "evidence_probability_positive", "evidence_sign_stability",
+    "raw_group_mean", "raw_group_ci_low", "raw_group_ci_high",
+    "feature_group_mean", "feature_group_ci_low", "feature_group_ci_high",
+    "dt_group_mean", "dt_group_ci_low", "dt_group_ci_high",
+    "max_abs_exactness_residual", "mean_abs_exactness_residual", "T", "D",
+    "raw_dim", "feature_dim", "dt_dim", "rawfeat_npz_path",
+]
+
+GROUP_SUMMARY_COLUMNS = [
+    "cover_group_id", "method", "n_group_samples", "n_like", "n_dislike",
+    "n_posterior_samples", "evidence_mean", "evidence_ci_low",
+    "evidence_ci_high", "max_abs_exactness_residual",
+    "max_abs_group_sum_residual", "audit_passed",
+]
+
+AUDIT_COLUMNS = [
+    "cover_group_id", "sample_id", "method", "max_abs_exactness_residual",
+    "mean_abs_exactness_residual", "max_abs_group_sum_residual",
+    "mean_abs_group_sum_residual", "audit_tolerance", "audit_passed",
+]
+
+SKIPPED_COLUMNS = [
+    "cover_group_id", "reason", "n_group_samples", "n_like", "n_dislike",
+]
+
+ERROR_COLUMNS = [
+    "cover_group_id", "sample_id", "rawfeat_npz_path", "stage", "error_type",
+    "error",
+]
+
+AUDIT_TOLERANCE = 1e-8
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-csv", type=Path, default=Path("group_local_runner_input.csv"))
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--n-samples", type=int, default=100)
+    parser.add_argument("--prototype-stat", choices=("median", "mean"), default="median")
+    parser.add_argument(
+        "--scaling", choices=("none", "group_l1", "group_l2", "standard"), default="group_l2"
+    )
+    parser.add_argument(
+        "--frame-weighting", choices=("frame_equal", "sample_equal"), default="sample_equal"
+    )
+    parser.add_argument("--lambda-hyb", type=float, default=0.5)
+    parser.add_argument("--normalize", choices=("l1", "none"), default="l1")
+    parser.add_argument("--target-label", default="Like")
+    parser.add_argument("--rival-label", default="Dislike")
+    parser.add_argument("--min-class-count", type=int, default=1)
+    parser.add_argument("--max-groups", type=int)
+    parser.add_argument("--max-samples-per-group", type=int)
+    parser.add_argument("--save-attributions", action="store_true")
+    parser.add_argument("--random-state", type=int, default=0)
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args(argv)
+    if args.n_samples <= 0:
+        parser.error("--n-samples must be positive")
+    if args.min_class_count <= 0:
+        parser.error("--min-class-count must be positive")
+    if args.max_groups is not None and args.max_groups <= 0:
+        parser.error("--max-groups must be positive")
+    if args.max_samples_per_group is not None and args.max_samples_per_group <= 0:
+        parser.error("--max-samples-per-group must be positive")
+    if not 0.0 <= args.lambda_hyb <= 1.0:
+        parser.error("--lambda-hyb must be in [0, 1]")
+    if args.target_label == args.rival_label:
+        parser.error("--target-label and --rival-label must differ")
+    return args
+
+
+def _truthy(value: Any) -> bool:
+    if pd.isna(value):
+        return False
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _safe_component(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip())
+    return text.strip("._") or "unnamed"
+
+
+def _resolve_npz_path(value: Any, input_csv: Path) -> Path:
+    path = Path(str(value)).expanduser()
+    return path if path.is_absolute() else input_csv.resolve().parent / path
+
+
+def _load_sequence(path: Path) -> tuple[RawFeatSequence, np.ndarray]:
+    with np.load(path, allow_pickle=False) as data:
+        missing = [name for name in ("raw", "features", "dt", "mask", "frame_starts") if name not in data]
+        if missing:
+            raise ValueError(f"missing NPZ arrays: {', '.join(missing)}")
+        raw = np.asarray(data["raw"], dtype=float)
+        features = np.asarray(data["features"], dtype=float)
+        dt = np.asarray(data["dt"], dtype=float)
+        mask = np.asarray(data["mask"])
+        frame_starts = np.asarray(data["frame_starts"])
+
+    if raw.ndim != 2:
+        raise ValueError(f"raw must be 2D, got shape={raw.shape}")
+    if features.ndim != 2:
+        raise ValueError(f"features must be 2D, got shape={features.shape}")
+    if dt.ndim != 1:
+        raise ValueError(f"dt must be 1D, got shape={dt.shape}")
+    if mask.ndim != 1:
+        raise ValueError(f"mask must be 1D, got shape={mask.shape}")
+    if frame_starts.ndim != 1:
+        raise ValueError(f"frame_starts must be 1D, got shape={frame_starts.shape}")
+    lengths = (raw.shape[0], features.shape[0], dt.shape[0], mask.shape[0], frame_starts.shape[0])
+    if len(set(lengths)) != 1:
+        raise ValueError(f"all RawFeat time dimensions must match, got {lengths}")
+    valid = mask.astype(bool)
+    if not np.any(valid):
+        raise ValueError("mask must contain at least one valid frame")
+    if not np.all(np.isfinite(raw[valid])):
+        raise ValueError("raw contains NaN or inf on valid frames")
+    if not np.all(np.isfinite(features[valid])):
+        raise ValueError("features contains NaN or inf on valid frames")
+    if not np.all(np.isfinite(dt[valid])):
+        raise ValueError("dt contains NaN or inf on valid frames")
+    return RawFeatSequence(raw=raw, features=features, dt=dt, mask=valid), frame_starts
+
+
+def _posterior_fields(prefix: str, summary: Any) -> dict[str, float]:
+    return {
+        f"{prefix}_mean": float(summary.mean),
+        f"{prefix}_ci_low": float(summary.credible_interval[0]),
+        f"{prefix}_ci_high": float(summary.credible_interval[1]),
+    }
+
+
+def _cap_group(group: pd.DataFrame, maximum: int | None) -> pd.DataFrame:
+    """Cap deterministically while retaining both labels when possible."""
+    if maximum is None or len(group) <= maximum:
+        return group
+    selected: list[int] = []
+    by_label = {label: group.index[group["label"] == label].tolist() for label in ("Like", "Dislike")}
+    while len(selected) < maximum and any(by_label.values()):
+        for label in ("Like", "Dislike"):
+            if by_label[label] and len(selected) < maximum:
+                selected.append(by_label[label].pop(0))
+    return group.loc[selected]
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows, columns=columns).to_csv(path, index=False)
+
+
+def _prepare_output(output_dir: Path, overwrite: bool) -> None:
+    managed = [output_dir / "results", output_dir / "attributions", output_dir / "logs"]
+    occupied = [path for path in managed if path.exists()]
+    if occupied and not overwrite:
+        raise FileExistsError(
+            f"managed output already exists under {output_dir}; use --overwrite to replace it"
+        )
+    if overwrite:
+        for path in occupied:
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
+    for path in managed:
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def _save_attribution(
+    output_dir: Path,
+    group_id: str,
+    sample_id: str,
+    method: Any,
+    mask: np.ndarray,
+    frame_starts: np.ndarray,
+) -> None:
+    path = output_dir / "attributions" / (
+        f"{_safe_component(group_id)}__{_safe_component(sample_id)}__hyb_summary.npz"
+    )
+    np.savez_compressed(
+        path,
+        posterior_mean=method.posterior_mean,
+        credible_interval_lower=method.credible_interval_lower,
+        credible_interval_upper=method.credible_interval_upper,
+        probability_positive=method.probability_positive,
+        sign_stability=method.sign_stability,
+        evidence_posterior=method.evidence_posterior,
+        exactness_residuals=method.exactness_residuals,
+        raw_group_posterior=method.raw_group_attribution.posterior,
+        feature_group_posterior=method.feature_group_attribution.posterior,
+        dt_group_posterior=method.dt_group_attribution.posterior,
+        mask=mask,
+        frame_starts=frame_starts,
+    )
+
+
+def run(args: argparse.Namespace) -> int:
+    input_csv = args.input_csv.resolve()
+    output_dir = args.output_dir.resolve()
+    _prepare_output(output_dir, args.overwrite)
+
+    required = {"sample_id", "cover_group_id", "label", "rawfeat_npz_path", "rel_path"}
+    frame = pd.read_csv(input_csv, dtype=str, keep_default_na=False)
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise ValueError(f"input CSV missing required columns: {', '.join(missing)}")
+    if "eligible_group_local" in frame.columns:
+        frame = frame[frame["eligible_group_local"].map(_truthy)]
+    frame = frame[frame["label"].isin(("Like", "Dislike"))].copy()
+    frame = frame[(frame["sample_id"] != "") & (frame["cover_group_id"] != "")]
+
+    group_ids = frame["cover_group_id"].drop_duplicates().tolist()
+    if args.max_groups is not None:
+        group_ids = group_ids[: args.max_groups]
+
+    per_sample: list[dict[str, Any]] = []
+    group_summary: list[dict[str, Any]] = []
+    audits: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for group_id in group_ids:
+        group = _cap_group(frame[frame["cover_group_id"] == group_id], args.max_samples_per_group)
+        input_counts = group["label"].value_counts()
+        n_like_input = int(input_counts.get("Like", 0))
+        n_dislike_input = int(input_counts.get("Dislike", 0))
+        if min(n_like_input, n_dislike_input) < args.min_class_count:
+            skipped.append({
+                "cover_group_id": group_id, "reason": "insufficient_class_count_before_loading",
+                "n_group_samples": len(group), "n_like": n_like_input, "n_dislike": n_dislike_input,
+            })
+            continue
+
+        loaded: list[tuple[pd.Series, RawFeatSequence, np.ndarray, Path]] = []
+        for _, row in group.iterrows():
+            path = _resolve_npz_path(row["rawfeat_npz_path"], input_csv)
+            try:
+                sequence, frame_starts = _load_sequence(path)
+                loaded.append((row, sequence, frame_starts, path))
+            except Exception as exc:  # isolate malformed samples without hiding them
+                errors.append({
+                    "cover_group_id": group_id, "sample_id": row["sample_id"],
+                    "rawfeat_npz_path": str(path), "stage": "load_npz",
+                    "error_type": type(exc).__name__, "error": str(exc),
+                })
+
+        loaded_labels = [item[0]["label"] for item in loaded]
+        n_like = loaded_labels.count("Like")
+        n_dislike = loaded_labels.count("Dislike")
+        if min(n_like, n_dislike) < args.min_class_count:
+            skipped.append({
+                "cover_group_id": group_id, "reason": "insufficient_class_count_after_loading",
+                "n_group_samples": len(loaded), "n_like": n_like, "n_dislike": n_dislike,
+            })
+            continue
+
+        sequences = [item[1] for item in loaded]
+        try:
+            posterior = fit_bayesian_rawfeat_prototypes(
+                sequences,
+                loaded_labels,
+                n_samples=args.n_samples,
+                prototype_stat=args.prototype_stat,
+                scaling=args.scaling,
+                frame_weighting=args.frame_weighting,
+                random_state=args.random_state,
+            )
+        except Exception as exc:
+            errors.append({
+                "cover_group_id": group_id, "sample_id": "", "rawfeat_npz_path": "",
+                "stage": "fit_posterior", "error_type": type(exc).__name__, "error": str(exc),
+            })
+            skipped.append({
+                "cover_group_id": group_id, "reason": "posterior_fit_error",
+                "n_group_samples": len(loaded), "n_like": n_like, "n_dislike": n_dislike,
+            })
+            continue
+
+        group_rows: list[dict[str, Any]] = []
+        group_audits: list[dict[str, Any]] = []
+        group_evidence_posteriors: list[np.ndarray] = []
+        for row, sequence, frame_starts, path in loaded:
+            try:
+                result = bayesian_rawfeat_dynamic_fpde_explain_one(
+                    sequence,
+                    posterior,
+                    target_label=args.target_label,
+                    rival_label=args.rival_label,
+                    lambda_hyb=args.lambda_hyb,
+                    normalize=args.normalize,
+                )
+                method = result.hyb
+                exact = np.asarray(method.exactness_residuals, dtype=float)
+                group_sum_residual = (
+                    np.asarray(method.raw_group_attribution.posterior)
+                    + np.asarray(method.feature_group_attribution.posterior)
+                    + np.asarray(method.dt_group_attribution.posterior)
+                    - np.asarray(method.evidence_posterior)
+                )
+                audit = {
+                    "cover_group_id": group_id,
+                    "sample_id": row["sample_id"],
+                    "method": "hyb",
+                    "max_abs_exactness_residual": float(np.max(np.abs(exact))),
+                    "mean_abs_exactness_residual": float(np.mean(np.abs(exact))),
+                    "max_abs_group_sum_residual": float(np.max(np.abs(group_sum_residual))),
+                    "mean_abs_group_sum_residual": float(np.mean(np.abs(group_sum_residual))),
+                    "audit_tolerance": AUDIT_TOLERANCE,
+                }
+                audit["audit_passed"] = bool(
+                    audit["max_abs_exactness_residual"] <= AUDIT_TOLERANCE
+                    and audit["max_abs_group_sum_residual"] <= AUDIT_TOLERANCE
+                )
+                sample_row = {
+                    "cover_group_id": group_id, "sample_id": row["sample_id"],
+                    "label": row["label"], "method": "hyb",
+                    "n_group_samples": len(loaded), "n_like": n_like, "n_dislike": n_dislike,
+                    "n_posterior_samples": int(np.asarray(method.evidence.posterior).size),
+                    "lambda_hyb": args.lambda_hyb,
+                    **_posterior_fields("evidence", method.evidence),
+                    "evidence_probability_positive": float(method.evidence.probability_positive),
+                    "evidence_sign_stability": float(method.evidence.sign_stability),
+                    **_posterior_fields("raw_group", method.raw_group_attribution),
+                    **_posterior_fields("feature_group", method.feature_group_attribution),
+                    **_posterior_fields("dt_group", method.dt_group_attribution),
+                    "max_abs_exactness_residual": audit["max_abs_exactness_residual"],
+                    "mean_abs_exactness_residual": audit["mean_abs_exactness_residual"],
+                    "T": int(sequence.raw.shape[0]),
+                    "D": int(sequence.raw.shape[1] + sequence.features.shape[1] + 1),
+                    "raw_dim": int(sequence.raw.shape[1]),
+                    "feature_dim": int(sequence.features.shape[1]),
+                    "dt_dim": 1,
+                    "rawfeat_npz_path": str(path),
+                }
+                group_rows.append(sample_row)
+                group_audits.append(audit)
+                group_evidence_posteriors.append(np.asarray(method.evidence_posterior, dtype=float))
+                if args.save_attributions:
+                    _save_attribution(
+                        output_dir, group_id, row["sample_id"], method, result.mask, frame_starts
+                    )
+            except Exception as exc:
+                errors.append({
+                    "cover_group_id": group_id, "sample_id": row["sample_id"],
+                    "rawfeat_npz_path": str(path), "stage": "explain",
+                    "error_type": type(exc).__name__, "error": str(exc),
+                })
+
+        if group_rows:
+            group_evidence = np.mean(np.stack(group_evidence_posteriors, axis=0), axis=0)
+            group_summary.append({
+                "cover_group_id": group_id, "method": "hyb",
+                "n_group_samples": len(group_rows),
+                "n_like": sum(item["label"] == "Like" for item in group_rows),
+                "n_dislike": sum(item["label"] == "Dislike" for item in group_rows),
+                "n_posterior_samples": args.n_samples,
+                "evidence_mean": float(np.mean(group_evidence)),
+                "evidence_ci_low": float(np.quantile(group_evidence, 0.025)),
+                "evidence_ci_high": float(np.quantile(group_evidence, 0.975)),
+                "max_abs_exactness_residual": max(a["max_abs_exactness_residual"] for a in group_audits),
+                "max_abs_group_sum_residual": max(a["max_abs_group_sum_residual"] for a in group_audits),
+                "audit_passed": all(a["audit_passed"] for a in group_audits),
+            })
+            per_sample.extend(group_rows)
+            audits.extend(group_audits)
+
+    results_dir = output_dir / "results"
+    _write_csv(results_dir / "per_sample_hyb.csv", per_sample, PER_SAMPLE_COLUMNS)
+    _write_csv(results_dir / "group_summary.csv", group_summary, GROUP_SUMMARY_COLUMNS)
+    _write_csv(results_dir / "audit_summary.csv", audits, AUDIT_COLUMNS)
+    _write_csv(results_dir / "skipped_groups.csv", skipped, SKIPPED_COLUMNS)
+    _write_csv(results_dir / "errors.csv", errors, ERROR_COLUMNS)
+
+    config = vars(args).copy()
+    config.update({
+        "input_csv": str(input_csv), "output_dir": str(output_dir),
+        "interpretation": "group-local Like-vs-Dislike prototype-evidence decomposition",
+        "causal_explanation": False, "ground_truth_attribution": False,
+        "uses_original_song_data": False, "global_temporal_resampling": False,
+        "n_input_rows_after_filtering": int(len(frame)),
+        "n_groups_considered": len(group_ids), "n_samples_completed": len(per_sample),
+    })
+    (output_dir / "logs" / "run_config.json").write_text(
+        json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return run(_parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

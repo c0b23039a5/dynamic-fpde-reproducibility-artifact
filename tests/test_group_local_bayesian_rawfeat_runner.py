@@ -74,6 +74,15 @@ def test_group_local_bayesian_rawfeat_runner_smoke(tmp_path: Path) -> None:
     config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
     assert config["global_temporal_resampling"] is False
     assert config["uses_original_song_data"] is False
+    assert config["draw_chunk_size"] == 8
+    assert config["free_cuda_memory_pool"] is False
+    timing = pd.read_csv(output_dir / "results" / "timing_summary.csv")
+    assert list(timing.columns) == [
+        "cover_group_id", "load_sec", "posterior_fit_sec", "explain_sec",
+        "samples_per_sec", "draws_per_sec", "device",
+    ]
+    assert set(timing["cover_group_id"]) == {"eligible", "ineligible"}
+    assert (timing["device"] == "cpu").all()
 
 
 def test_group_local_low_memory_preserves_native_time_and_skips_coordinates(
@@ -150,11 +159,17 @@ def test_low_memory_cuda_smoke(tmp_path: Path) -> None:
     output_dir = tmp_path / "cuda"
     assert main([
         "--input-csv", str(input_csv), "--output-dir", str(output_dir),
-        "--n-samples", "5", "--device", "cuda",
+        "--n-samples", "5", "--device", "cuda", "--draw-chunk-size", "2",
     ]) == 0
     result = pd.read_csv(output_dir / "results" / "per_sample_hyb.csv")
     assert dict(zip(result["sample_id"], result["T"])) == {"like": 4, "dislike": 6}
     assert np.isfinite(result["evidence_mean"]).all()
+    assert np.isfinite(result["max_abs_exactness_residual"]).all()
+    timing = pd.read_csv(output_dir / "results" / "timing_summary.csv")
+    assert np.isfinite(timing[["load_sec", "posterior_fit_sec", "explain_sec"]].to_numpy()).all()
+    assert (timing["device"] == "cuda").all()
     config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
     assert config["device"] == "cuda"
+    assert config["draw_chunk_size"] == 2
+    assert config["free_cuda_memory_pool"] is False
     assert config["cuda_device_name"]

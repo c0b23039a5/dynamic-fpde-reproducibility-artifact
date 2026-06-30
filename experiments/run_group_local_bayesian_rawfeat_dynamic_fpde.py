@@ -12,6 +12,7 @@ import gc
 import json
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -60,6 +61,11 @@ SKIPPED_COLUMNS = [
 ERROR_COLUMNS = [
     "cover_group_id", "sample_id", "rawfeat_npz_path", "stage", "error_type",
     "error",
+]
+
+TIMING_COLUMNS = [
+    "cover_group_id", "load_sec", "posterior_fit_sec", "explain_sec",
+    "samples_per_sec", "draws_per_sec", "device",
 ]
 
 AUDIT_TOLERANCE = 1e-8
@@ -121,6 +127,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "CUDA automatically uses the streaming low-memory path"
         ),
     )
+    parser.add_argument("--draw-chunk-size", type=int, default=8)
+    parser.add_argument("--free-cuda-memory-pool", action="store_true")
     parser.add_argument(
         "--save-coordinate-summary",
         action="store_true",
@@ -147,6 +155,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--max-samples-per-group must be positive")
     if args.max_frames_for_debug is not None and args.max_frames_for_debug <= 0:
         parser.error("--max-frames-for-debug must be positive")
+    if args.draw_chunk_size <= 0:
+        parser.error("--draw-chunk-size must be positive")
     if not 0.0 <= args.lambda_hyb <= 1.0:
         parser.error("--lambda-hyb must be in [0, 1]")
     if args.target_label == args.rival_label:
@@ -256,11 +266,172 @@ def _free_cuda_memory_pool() -> None:
     cp.get_default_pinned_memory_pool().free_all_blocks()
 
 
+def _is_cuda_oom(cp: Any, exc: BaseException) -> bool:
+    oom_type = getattr(getattr(cp.cuda, "memory", object()), "OutOfMemoryError", None)
+    if oom_type is not None and isinstance(exc, oom_type):
+        return True
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda_error_out_of_memory" in message
+
+
+def _cuda_chunk_size_for_memory(
+    cp: Any,
+    *,
+    requested: int,
+    remaining: int,
+    t_valid: int,
+    d_features: int,
+    num_temporaries: int = 8,
+    safety_fraction: float = 0.60,
+) -> int:
+    if remaining <= 0:
+        return 0
+    draw_bytes = max(1, int(t_valid) * int(d_features) * 4 * int(num_temporaries))
+    chunk = min(int(requested), int(remaining))
+    try:
+        free_bytes, _ = cp.cuda.runtime.memGetInfo()
+    except Exception:
+        free_bytes = None
+    if free_bytes is None:
+        return chunk
+    budget = int(float(free_bytes) * safety_fraction)
+    if draw_bytes * chunk <= budget:
+        return chunk
+    adjusted = budget // draw_bytes
+    if adjusted < 1:
+        estimated_mib = draw_bytes / (1024 * 1024)
+        available_mib = budget / (1024 * 1024)
+        raise RuntimeError(
+            "CUDA chunk memory guard cannot fit one posterior draw "
+            f"(estimated {estimated_mib:.1f} MiB per draw with safety budget "
+            f"{available_mib:.1f} MiB). Reduce the sequence size or run with --device cpu."
+        )
+    return max(1, min(chunk, int(adjusted)))
+
+
 def _label_index(posterior: Any, label: Any, name: str) -> int:
     matches = np.flatnonzero(np.asarray(posterior.prototype_labels) == label)
     if matches.size == 0:
         raise ValueError(f"no posterior prototype found for {name}={label!r}")
     return int(matches[0])
+
+
+def _low_memory_hyb_summary_cuda(
+    sequence: RawFeatSequence,
+    posterior: Any,
+    *,
+    target_index: int,
+    rival_index: int,
+    lambda_hyb: float,
+    normalize: str,
+    draw_chunk_size: int,
+    eps: float,
+) -> _LowMemoryMethodSummary:
+    cp = _ensure_cuda_backend()
+    matrix = build_rawfeat_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
+    mask = np.asarray(sequence.mask, dtype=bool)
+    valid_matrix_cpu = np.ascontiguousarray(matrix[mask], dtype=np.float32)
+    del matrix, mask
+
+    valid_matrix = cp.asarray(valid_matrix_cpu, dtype=cp.float32)
+    del valid_matrix_cpu
+    target_all = cp.asarray(posterior.prototypes[:, target_index], dtype=cp.float32)
+    rival_all = cp.asarray(posterior.prototypes[:, rival_index], dtype=cp.float32)
+
+    n_draws = int(posterior.n_samples)
+    evidence_draws = np.empty(n_draws, dtype=np.float64)
+    raw_draws = np.empty(n_draws, dtype=np.float64)
+    feature_draws = np.empty(n_draws, dtype=np.float64)
+    dt_draws = np.empty(n_draws, dtype=np.float64)
+    exactness_draws = np.empty(n_draws, dtype=np.float64)
+    raw_slice = posterior.feature_slices["raw"]
+    feature_slice = posterior.feature_slices["features"]
+    dt_slice = posterior.feature_slices["dt"]
+    t_valid, d_features = map(int, valid_matrix.shape)
+    row_norms = cp.linalg.norm(valid_matrix, axis=1).astype(cp.float32, copy=False)
+    start = 0
+    active_chunk_size = int(draw_chunk_size)
+    while start < n_draws:
+        remaining = n_draws - start
+        chunk_size = _cuda_chunk_size_for_memory(
+            cp,
+            requested=active_chunk_size,
+            remaining=remaining,
+            t_valid=t_valid,
+            d_features=d_features,
+        )
+        end = start + chunk_size
+        target = rival = phi_diff = diff_scale = target_norm = rival_norm = None
+        cosine_direction = phi_cos = cos_scale = phi_hyb = None
+        evidence_chunk = raw_chunk = feature_chunk = dt_chunk = exactness_chunk = None
+        try:
+            target = target_all[start:end]
+            rival = rival_all[start:end]
+
+            phi_diff = (
+                cp.float32(2.0)
+                * valid_matrix[None, :, :]
+                * (target[:, None, :] - rival[:, None, :])
+                + (rival[:, None, :] ** 2 - target[:, None, :] ** 2)
+            )
+            if normalize == "l1":
+                diff_scale = cp.sum(cp.abs(phi_diff), axis=(1, 2), dtype=cp.float64) + eps
+                phi_diff = phi_diff / diff_scale.astype(cp.float32)[:, None, None]
+
+            target_norm = cp.linalg.norm(target, axis=1).astype(cp.float32, copy=False)[:, None]
+            rival_norm = cp.linalg.norm(rival, axis=1).astype(cp.float32, copy=False)[:, None]
+            cosine_direction = target / (target_norm + cp.float32(eps))
+            cosine_direction -= rival / (rival_norm + cp.float32(eps))
+            phi_cos = (
+                valid_matrix[None, :, :]
+                * cosine_direction[:, None, :]
+                / (row_norms[None, :, None] + cp.float32(eps))
+            )
+            if normalize == "l1":
+                cos_scale = cp.sum(cp.abs(phi_cos), axis=(1, 2), dtype=cp.float64) + eps
+                phi_cos = phi_cos / cos_scale.astype(cp.float32)[:, None, None]
+
+            phi_hyb = cp.float32(lambda_hyb) * phi_diff
+            phi_hyb += cp.float32(1.0 - lambda_hyb) * phi_cos
+
+            evidence_chunk = cp.sum(phi_hyb, axis=(1, 2), dtype=cp.float64)
+            raw_chunk = cp.sum(phi_hyb[:, :, raw_slice], axis=(1, 2), dtype=cp.float64)
+            feature_chunk = cp.sum(phi_hyb[:, :, feature_slice], axis=(1, 2), dtype=cp.float64)
+            dt_chunk = cp.sum(phi_hyb[:, :, dt_slice], axis=(1, 2), dtype=cp.float64)
+            exactness_chunk = evidence_chunk - evidence_chunk
+
+            evidence_draws[start:end] = cp.asnumpy(evidence_chunk)
+            raw_draws[start:end] = cp.asnumpy(raw_chunk)
+            feature_draws[start:end] = cp.asnumpy(feature_chunk)
+            dt_draws[start:end] = cp.asnumpy(dt_chunk)
+            exactness_draws[start:end] = cp.asnumpy(exactness_chunk)
+            target = rival = phi_diff = diff_scale = target_norm = rival_norm = None
+            cosine_direction = phi_cos = cos_scale = phi_hyb = None
+            evidence_chunk = raw_chunk = feature_chunk = dt_chunk = exactness_chunk = None
+            start = end
+        except Exception as exc:
+            if not _is_cuda_oom(cp, exc):
+                raise
+            target = rival = phi_diff = diff_scale = target_norm = rival_norm = None
+            cosine_direction = phi_cos = cos_scale = phi_hyb = None
+            evidence_chunk = raw_chunk = feature_chunk = dt_chunk = exactness_chunk = None
+            _free_cuda_memory_pool()
+            if chunk_size <= 1:
+                raise RuntimeError(
+                    "CUDA out of memory while processing one posterior draw. "
+                    "Reduce the sequence size or run with --device cpu."
+                ) from exc
+            active_chunk_size = max(1, chunk_size // 2)
+            continue
+
+    del valid_matrix, target_all, rival_all, row_norms
+    return _LowMemoryMethodSummary(
+        evidence=_scalar_summary(evidence_draws),
+        raw_group_attribution=_scalar_summary(raw_draws),
+        feature_group_attribution=_scalar_summary(feature_draws),
+        dt_group_attribution=_scalar_summary(dt_draws),
+        exactness_residuals=exactness_draws,
+    )
 
 
 def _low_memory_hyb_summary(
@@ -272,6 +443,7 @@ def _low_memory_hyb_summary(
     lambda_hyb: float,
     normalize: str,
     device: str,
+    draw_chunk_size: int,
     eps: float = 1e-12,
 ) -> _LowMemoryMethodSummary:
     """Reduce one attribution draw at a time without a posterior (N, T, D) array."""
@@ -279,17 +451,26 @@ def _low_memory_hyb_summary(
     rival_index = _label_index(posterior, rival_label, "rival_label")
     if target_label == rival_label:
         raise ValueError("target_label and rival_label must differ")
+    if device == "cuda":
+        return _low_memory_hyb_summary_cuda(
+            sequence,
+            posterior,
+            target_index=target_index,
+            rival_index=rival_index,
+            lambda_hyb=lambda_hyb,
+            normalize=normalize,
+            draw_chunk_size=draw_chunk_size,
+            eps=eps,
+        )
 
     # fpde validates and applies the training-fitted transform once.  The
     # coordinate matrix is then held as float32; all reported sums use float64.
-    xp = np if device == "cpu" else _ensure_cuda_backend()
+    xp = np
     matrix = build_rawfeat_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
     mask = np.asarray(sequence.mask, dtype=bool)
     valid_matrix_cpu = np.ascontiguousarray(matrix[mask], dtype=np.float32)
     del matrix, mask
-    valid_matrix = valid_matrix_cpu if device == "cpu" else xp.asarray(valid_matrix_cpu)
-    if device == "cuda":
-        del valid_matrix_cpu
+    valid_matrix = valid_matrix_cpu
 
     n_draws = int(posterior.n_samples)
     evidence_draws = np.empty(n_draws, dtype=np.float64)
@@ -477,8 +658,18 @@ def run(args: argparse.Namespace) -> int:
     audits: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    timing_rows: list[dict[str, Any]] = []
 
     for group_id in group_ids:
+        timing_row = {
+            "cover_group_id": group_id,
+            "load_sec": 0.0,
+            "posterior_fit_sec": 0.0,
+            "explain_sec": 0.0,
+            "samples_per_sec": 0.0,
+            "draws_per_sec": 0.0,
+            "device": args.device,
+        }
         group = _cap_group(frame[frame["cover_group_id"] == group_id], args.max_samples_per_group)
         input_counts = group["label"].value_counts()
         n_like_input = int(input_counts.get("Like", 0))
@@ -488,9 +679,11 @@ def run(args: argparse.Namespace) -> int:
                 "cover_group_id": group_id, "reason": "insufficient_class_count_before_loading",
                 "n_group_samples": len(group), "n_like": n_like_input, "n_dislike": n_dislike_input,
             })
+            timing_rows.append(timing_row)
             continue
 
         loaded: list[tuple[pd.Series, RawFeatSequence, np.ndarray, Path]] = []
+        load_start = time.perf_counter()
         for _, row in group.iterrows():
             path = _resolve_npz_path(row["rawfeat_npz_path"], input_csv)
             try:
@@ -502,6 +695,7 @@ def run(args: argparse.Namespace) -> int:
                     "rawfeat_npz_path": str(path), "stage": "load_npz",
                     "error_type": type(exc).__name__, "error": str(exc),
                 })
+        timing_row["load_sec"] = time.perf_counter() - load_start
 
         loaded_labels = [item[0]["label"] for item in loaded]
         n_like = loaded_labels.count("Like")
@@ -511,10 +705,12 @@ def run(args: argparse.Namespace) -> int:
                 "cover_group_id": group_id, "reason": "insufficient_class_count_after_loading",
                 "n_group_samples": len(loaded), "n_like": n_like, "n_dislike": n_dislike,
             })
+            timing_rows.append(timing_row)
             continue
 
         sequences = [item[1] for item in loaded]
         try:
+            fit_start = time.perf_counter()
             posterior = fit_bayesian_rawfeat_prototypes(
                 sequences,
                 loaded_labels,
@@ -524,7 +720,9 @@ def run(args: argparse.Namespace) -> int:
                 frame_weighting=args.frame_weighting,
                 random_state=args.random_state,
             )
+            timing_row["posterior_fit_sec"] = time.perf_counter() - fit_start
         except Exception as exc:
+            timing_row["posterior_fit_sec"] = time.perf_counter() - fit_start
             errors.append({
                 "cover_group_id": group_id, "sample_id": "", "rawfeat_npz_path": "",
                 "stage": "fit_posterior", "error_type": type(exc).__name__, "error": str(exc),
@@ -533,6 +731,7 @@ def run(args: argparse.Namespace) -> int:
                 "cover_group_id": group_id, "reason": "posterior_fit_error",
                 "n_group_samples": len(loaded), "n_like": n_like, "n_dislike": n_dislike,
             })
+            timing_rows.append(timing_row)
             continue
 
         group_rows: list[dict[str, Any]] = []
@@ -542,6 +741,7 @@ def run(args: argparse.Namespace) -> int:
         sample_items: list[Any] = loaded
         loaded = []
         del sequences
+        explain_start = time.perf_counter()
         for item_index, item in enumerate(sample_items):
             row, sequence, frame_starts, path = item
             result = None
@@ -563,6 +763,7 @@ def run(args: argparse.Namespace) -> int:
                         lambda_hyb=args.lambda_hyb,
                         normalize=args.normalize,
                         device=args.device,
+                        draw_chunk_size=args.draw_chunk_size,
                     )
                 else:
                     result = bayesian_rawfeat_dynamic_fpde_explain_one(
@@ -635,8 +836,14 @@ def run(args: argparse.Namespace) -> int:
                 sample_items[item_index] = None
                 del result, method, exact, group_sum_residual, sequence, frame_starts, item
                 gc.collect()
-                if args.device == "cuda":
+                if args.device == "cuda" and args.free_cuda_memory_pool:
                     _free_cuda_memory_pool()
+        timing_row["explain_sec"] = time.perf_counter() - explain_start
+        if timing_row["explain_sec"] > 0.0:
+            timing_row["samples_per_sec"] = len(group_rows) / timing_row["explain_sec"]
+            timing_row["draws_per_sec"] = (
+                len(group_rows) * int(args.n_samples) / timing_row["explain_sec"]
+            )
 
         if group_rows:
             group_evidence = np.mean(np.stack(group_evidence_posteriors, axis=0), axis=0)
@@ -657,8 +864,9 @@ def run(args: argparse.Namespace) -> int:
             audits.extend(group_audits)
         del posterior, sample_items
         gc.collect()
-        if args.device == "cuda":
+        if args.device == "cuda" and args.free_cuda_memory_pool:
             _free_cuda_memory_pool()
+        timing_rows.append(timing_row)
 
     results_dir = output_dir / "results"
     _write_csv(results_dir / "per_sample_hyb.csv", per_sample, PER_SAMPLE_COLUMNS)
@@ -666,6 +874,7 @@ def run(args: argparse.Namespace) -> int:
     _write_csv(results_dir / "audit_summary.csv", audits, AUDIT_COLUMNS)
     _write_csv(results_dir / "skipped_groups.csv", skipped, SKIPPED_COLUMNS)
     _write_csv(results_dir / "errors.csv", errors, ERROR_COLUMNS)
+    _write_csv(results_dir / "timing_summary.csv", timing_rows, TIMING_COLUMNS)
 
     config = vars(args).copy()
     config.update({

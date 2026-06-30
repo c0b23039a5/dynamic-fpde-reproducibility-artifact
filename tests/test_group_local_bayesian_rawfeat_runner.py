@@ -19,16 +19,44 @@ def _cuda_available() -> bool:
         return False
 
 
-def _write_rawfeat(path: Path, *, seed: int, time_length: int) -> None:
+def _write_rawfeat(
+    path: Path, *, seed: int, time_length: int, include_raw: bool = True
+) -> None:
     rng = np.random.default_rng(seed)
-    np.savez(
-        path,
-        raw=rng.normal(size=(time_length, 2)),
-        features=rng.normal(size=(time_length, 3)),
-        dt=np.linspace(0.01, 0.02, time_length),
-        mask=np.ones(time_length, dtype=bool),
-        frame_starts=np.arange(time_length) * 128,
-    )
+    arrays = {
+        "features": rng.normal(size=(time_length, 3)).astype(np.float32),
+        "dt": np.linspace(0.01, 0.02, time_length, dtype=np.float32),
+        "mask": np.ones(time_length, dtype=bool),
+        "frame_starts": (np.arange(time_length) * 128).astype(np.int64),
+    }
+    if include_raw:
+        arrays["raw"] = rng.normal(size=(time_length, 2)).astype(np.float32)
+    np.savez(path, **arrays)
+
+
+def _write_input_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _two_sample_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "sample_id": "like",
+            "cover_group_id": "g",
+            "label": "Like",
+            "rawfeat_npz_path": "like.npz",
+            "rel_path": "covers/like",
+            "eligible_group_local": True,
+        },
+        {
+            "sample_id": "dislike",
+            "cover_group_id": "g",
+            "label": "Dislike",
+            "rawfeat_npz_path": "dislike.npz",
+            "rel_path": "covers/dislike",
+            "eligible_group_local": True,
+        },
+    ]
 
 
 def test_group_local_bayesian_rawfeat_runner_smoke(tmp_path: Path) -> None:
@@ -67,11 +95,22 @@ def test_group_local_bayesian_rawfeat_runner_smoke(tmp_path: Path) -> None:
     assert like_attribution.exists()
     assert dislike_attribution.exists()
     with np.load(like_attribution) as data:
-        assert data["posterior_mean"].shape == (3, 6)
+        assert data["posterior_mean"].shape == (3, 4)
     with np.load(dislike_attribution) as data:
-        assert data["posterior_mean"].shape == (5, 6)
+        assert data["posterior_mean"].shape == (5, 4)
+    assert (per_sample["evidence_input"] == "features_dt").all()
+    assert (per_sample["input_dim"] == 4).all()
+    assert (per_sample["raw_dim"] == 0).all()
+    assert (per_sample["feature_dim"] == 3).all()
+    assert (per_sample["dt_dim"] == 1).all()
+    assert (per_sample["raw_included"] == False).all()  # noqa: E712
+    assert (per_sample["dt_included"] == True).all()  # noqa: E712
+    assert (per_sample["uses_raw_for_evidence"] == False).all()  # noqa: E712
 
     config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
+    assert config["evidence_input"] == "features_dt"
+    assert config["uses_raw_for_evidence"] is False
+    assert config["uses_raw_for_generation"] is False
     assert config["global_temporal_resampling"] is False
     assert config["uses_original_song_data"] is False
     assert config["draw_chunk_size"] == 8
@@ -83,6 +122,102 @@ def test_group_local_bayesian_rawfeat_runner_smoke(tmp_path: Path) -> None:
     ]
     assert set(timing["cover_group_id"]) == {"eligible", "ineligible"}
     assert (timing["device"] == "cpu").all()
+
+
+def test_feature_only_npz_works_with_features_input(tmp_path: Path) -> None:
+    _write_rawfeat(tmp_path / "like.npz", seed=40, time_length=4, include_raw=False)
+    _write_rawfeat(tmp_path / "dislike.npz", seed=41, time_length=6, include_raw=False)
+    input_csv = tmp_path / "input.csv"
+    _write_input_csv(input_csv, _two_sample_rows())
+
+    output_dir = tmp_path / "features"
+    assert main([
+        "--input-csv", str(input_csv), "--output-dir", str(output_dir),
+        "--n-samples", "5", "--evidence-input", "features",
+    ]) == 0
+
+    result = pd.read_csv(output_dir / "results" / "per_sample_hyb.csv")
+    assert dict(zip(result["sample_id"], result["T"])) == {"like": 4, "dislike": 6}
+    assert (result["evidence_input"] == "features").all()
+    assert (result["D"] == 3).all()
+    assert (result["input_dim"] == 3).all()
+    assert (result["raw_dim"] == 0).all()
+    assert (result["feature_dim"] == 3).all()
+    assert (result["dt_dim"] == 0).all()
+    assert (result["uses_raw_for_evidence"] == False).all()  # noqa: E712
+    config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
+    assert config["global_temporal_resampling"] is False
+
+
+def test_feature_only_npz_works_with_features_dt_default(tmp_path: Path) -> None:
+    _write_rawfeat(tmp_path / "like.npz", seed=50, time_length=5, include_raw=False)
+    _write_rawfeat(tmp_path / "dislike.npz", seed=51, time_length=8, include_raw=False)
+    input_csv = tmp_path / "input.csv"
+    _write_input_csv(input_csv, _two_sample_rows())
+
+    output_dir = tmp_path / "features-dt"
+    assert main([
+        "--input-csv", str(input_csv), "--output-dir", str(output_dir),
+        "--n-samples", "5",
+    ]) == 0
+
+    result = pd.read_csv(output_dir / "results" / "per_sample_hyb.csv")
+    assert dict(zip(result["sample_id"], result["T"])) == {"like": 5, "dislike": 8}
+    assert (result["evidence_input"] == "features_dt").all()
+    assert (result["D"] == 4).all()
+    assert (result["input_dim"] == 4).all()
+    assert (result["raw_dim"] == 0).all()
+    assert (result["feature_dim"] == 3).all()
+    assert (result["dt_dim"] == 1).all()
+    assert (result["raw_included"] == False).all()  # noqa: E712
+    assert (result["dt_included"] == True).all()  # noqa: E712
+    assert (result["uses_raw_for_evidence"] == False).all()  # noqa: E712
+    config = json.loads((output_dir / "logs" / "run_config.json").read_text(encoding="utf-8"))
+    assert config["evidence_input"] == "features_dt"
+    assert config["uses_raw_for_evidence"] is False
+    assert config["uses_raw_for_generation"] is False
+    assert config["uses_original_song_data"] is False
+    assert config["global_temporal_resampling"] is False
+
+
+def test_rawfeat_mode_requires_raw_and_uses_raw_feature_dt_dimension(tmp_path: Path) -> None:
+    _write_rawfeat(tmp_path / "like.npz", seed=60, time_length=4, include_raw=True)
+    _write_rawfeat(tmp_path / "dislike.npz", seed=61, time_length=4, include_raw=True)
+    input_csv = tmp_path / "input.csv"
+    _write_input_csv(input_csv, _two_sample_rows())
+
+    output_dir = tmp_path / "rawfeat"
+    assert main([
+        "--input-csv", str(input_csv), "--output-dir", str(output_dir),
+        "--n-samples", "5", "--evidence-input", "rawfeat",
+    ]) == 0
+    result = pd.read_csv(output_dir / "results" / "per_sample_hyb.csv")
+    assert (result["D"] == 6).all()
+    assert (result["input_dim"] == 6).all()
+    assert (result["raw_dim"] == 2).all()
+    assert (result["feature_dim"] == 3).all()
+    assert (result["dt_dim"] == 1).all()
+    assert (result["raw_included"] == True).all()  # noqa: E712
+    assert (result["uses_raw_for_evidence"] == True).all()  # noqa: E712
+
+    _write_rawfeat(tmp_path / "like-missing.npz", seed=62, time_length=4, include_raw=False)
+    _write_rawfeat(tmp_path / "dislike-missing.npz", seed=63, time_length=4, include_raw=False)
+    missing_input_csv = tmp_path / "missing-input.csv"
+    _write_input_csv(
+        missing_input_csv,
+        [
+            {**_two_sample_rows()[0], "rawfeat_npz_path": "like-missing.npz"},
+            {**_two_sample_rows()[1], "rawfeat_npz_path": "dislike-missing.npz"},
+        ],
+    )
+    missing_output_dir = tmp_path / "rawfeat-missing"
+    assert main([
+        "--input-csv", str(missing_input_csv), "--output-dir", str(missing_output_dir),
+        "--n-samples", "5", "--evidence-input", "rawfeat",
+    ]) == 0
+    errors = pd.read_csv(missing_output_dir / "results" / "errors.csv")
+    assert set(errors["stage"]) == {"load_npz"}
+    assert errors["error"].str.contains("missing NPZ arrays: raw", regex=False).all()
 
 
 def test_group_local_low_memory_preserves_native_time_and_skips_coordinates(

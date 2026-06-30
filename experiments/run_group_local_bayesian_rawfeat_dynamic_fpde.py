@@ -20,14 +20,6 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from fpde.dynamic import (
-    RawFeatSequence,
-    bayesian_rawfeat_dynamic_fpde_explain_one,
-    build_rawfeat_matrix,
-    fit_bayesian_rawfeat_prototypes,
-)
-
-
 PER_SAMPLE_COLUMNS = [
     "cover_group_id", "sample_id", "label", "method", "n_group_samples",
     "n_like", "n_dislike", "n_posterior_samples", "lambda_hyb",
@@ -37,8 +29,9 @@ PER_SAMPLE_COLUMNS = [
     "feature_group_mean", "feature_group_ci_low", "feature_group_ci_high",
     "dt_group_mean", "dt_group_ci_low", "dt_group_ci_high",
     "max_abs_exactness_residual", "mean_abs_exactness_residual",
-    "max_abs_group_sum_residual", "T", "D", "raw_dim", "feature_dim",
-    "dt_dim", "rawfeat_npz_path",
+    "max_abs_group_sum_residual", "T", "D", "evidence_input", "input_dim",
+    "raw_dim", "feature_dim", "dt_dim", "raw_included", "dt_included",
+    "uses_raw_for_evidence", "rawfeat_npz_path",
 ]
 
 GROUP_SUMMARY_COLUMNS = [
@@ -93,11 +86,58 @@ class _LowMemoryMethodSummary:
         return self.evidence.posterior
 
 
+@dataclass(frozen=True)
+class EvidenceSequence:
+    matrix: np.ndarray
+    mask: np.ndarray
+    frame_starts: np.ndarray
+    feature_slices: dict[str, slice]
+
+
+@dataclass(frozen=True)
+class _EvidenceScaling:
+    mode: str
+    mean: np.ndarray
+    scale: np.ndarray
+
+
+@dataclass(frozen=True)
+class _EvidencePosterior:
+    prototypes: np.ndarray
+    prototype_labels: np.ndarray
+    n_samples: int
+    feature_slices: dict[str, slice]
+    scaling: _EvidenceScaling
+
+
+@dataclass(frozen=True)
+class _CoordinateMethodSummary:
+    posterior_mean: np.ndarray
+    credible_interval_lower: np.ndarray
+    credible_interval_upper: np.ndarray
+    probability_positive: np.ndarray
+    sign_stability: np.ndarray
+    evidence: _ScalarPosteriorSummary
+    raw_group_attribution: _ScalarPosteriorSummary
+    feature_group_attribution: _ScalarPosteriorSummary
+    dt_group_attribution: _ScalarPosteriorSummary
+    exactness_residuals: np.ndarray
+
+    @property
+    def evidence_posterior(self) -> np.ndarray:
+        return self.evidence.posterior
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-csv", type=Path, default=Path("group_local_runner_input.csv"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--n-samples", type=int, default=100)
+    parser.add_argument(
+        "--evidence-input",
+        choices=("features", "features_dt", "rawfeat"),
+        default="features_dt",
+    )
     parser.add_argument("--prototype-stat", choices=("median", "mean"), default="median")
     parser.add_argument(
         "--scaling", choices=("none", "group_l1", "group_l2", "standard"), default="group_l2"
@@ -180,20 +220,38 @@ def _resolve_npz_path(value: Any, input_csv: Path) -> Path:
     return path if path.is_absolute() else input_csv.resolve().parent / path
 
 
+def _slice_dim(feature_slices: dict[str, slice], name: str) -> int:
+    section = feature_slices[name]
+    return int(section.stop - section.start)
+
+
+def _slice_signature(feature_slices: dict[str, slice]) -> tuple[tuple[str, int, int], ...]:
+    return tuple(
+        (name, int(section.start), int(section.stop))
+        for name, section in sorted(feature_slices.items())
+    )
+
+
 def _load_sequence(
-    path: Path, max_frames_for_debug: int | None = None
-) -> tuple[RawFeatSequence, np.ndarray]:
+    path: Path,
+    *,
+    evidence_input: str,
+    max_frames_for_debug: int | None = None,
+) -> EvidenceSequence:
     with np.load(path, allow_pickle=False) as data:
-        missing = [name for name in ("raw", "features", "dt", "mask", "frame_starts") if name not in data]
+        required = ["features", "dt", "mask", "frame_starts"]
+        if evidence_input == "rawfeat":
+            required.insert(0, "raw")
+        missing = [name for name in required if name not in data]
         if missing:
             raise ValueError(f"missing NPZ arrays: {', '.join(missing)}")
-        raw = np.asarray(data["raw"], dtype=np.float32)
+        raw = np.asarray(data["raw"], dtype=np.float32) if evidence_input == "rawfeat" else None
         features = np.asarray(data["features"], dtype=np.float32)
-        dt = np.asarray(data["dt"], dtype=float)
-        mask = np.asarray(data["mask"])
-        frame_starts = np.asarray(data["frame_starts"])
+        dt = np.asarray(data["dt"], dtype=np.float32)
+        mask = np.asarray(data["mask"], dtype=bool)
+        frame_starts = np.asarray(data["frame_starts"], dtype=np.int64)
 
-    if raw.ndim != 2:
+    if raw is not None and raw.ndim != 2:
         raise ValueError(f"raw must be 2D, got shape={raw.shape}")
     if features.ndim != 2:
         raise ValueError(f"features must be 2D, got shape={features.shape}")
@@ -203,28 +261,64 @@ def _load_sequence(
         raise ValueError(f"mask must be 1D, got shape={mask.shape}")
     if frame_starts.ndim != 1:
         raise ValueError(f"frame_starts must be 1D, got shape={frame_starts.shape}")
-    lengths = (raw.shape[0], features.shape[0], dt.shape[0], mask.shape[0], frame_starts.shape[0])
+    lengths = [features.shape[0], dt.shape[0], mask.shape[0], frame_starts.shape[0]]
+    if raw is not None:
+        lengths.insert(0, raw.shape[0])
     if len(set(lengths)) != 1:
-        raise ValueError(f"all RawFeat time dimensions must match, got {lengths}")
-    valid = mask.astype(bool)
+        raise ValueError(f"all evidence time dimensions must match, got {tuple(lengths)}")
+    valid = mask
     if not np.any(valid):
         raise ValueError("mask must contain at least one valid frame")
-    if not np.all(np.isfinite(raw[valid])):
+    if raw is not None and not np.all(np.isfinite(raw[valid])):
         raise ValueError("raw contains NaN or inf on valid frames")
     if not np.all(np.isfinite(features[valid])):
         raise ValueError("features contains NaN or inf on valid frames")
-    if not np.all(np.isfinite(dt[valid])):
-        raise ValueError("dt contains NaN or inf on valid frames")
+    if not np.all(np.isfinite(dt)):
+        raise ValueError("dt contains NaN or inf")
     if max_frames_for_debug is not None:
-        stop = min(max_frames_for_debug, raw.shape[0])
-        raw = raw[:stop]
+        stop = min(max_frames_for_debug, features.shape[0])
+        if raw is not None:
+            raw = raw[:stop]
         features = features[:stop]
         dt = dt[:stop]
         valid = valid[:stop]
         frame_starts = frame_starts[:stop]
         if not np.any(valid):
             raise ValueError("debug frame truncation removed all valid frames")
-    return RawFeatSequence(raw=raw, features=features, dt=dt, mask=valid), frame_starts
+
+    feature_dim = int(features.shape[1])
+    if evidence_input == "features":
+        matrix = features
+        feature_slices = {
+            "raw": slice(0, 0),
+            "features": slice(0, feature_dim),
+            "dt": slice(feature_dim, feature_dim),
+        }
+    elif evidence_input == "features_dt":
+        matrix = np.concatenate([features, dt[:, None]], axis=1)
+        feature_slices = {
+            "raw": slice(0, 0),
+            "features": slice(0, feature_dim),
+            "dt": slice(feature_dim, feature_dim + 1),
+        }
+    elif evidence_input == "rawfeat":
+        assert raw is not None
+        raw_dim = int(raw.shape[1])
+        matrix = np.concatenate([raw, features, dt[:, None]], axis=1)
+        feature_slices = {
+            "raw": slice(0, raw_dim),
+            "features": slice(raw_dim, raw_dim + feature_dim),
+            "dt": slice(raw_dim + feature_dim, raw_dim + feature_dim + 1),
+        }
+    else:
+        raise ValueError(f"unsupported evidence_input={evidence_input!r}")
+
+    return EvidenceSequence(
+        matrix=np.asarray(matrix, dtype=np.float32),
+        mask=valid,
+        frame_starts=frame_starts,
+        feature_slices=feature_slices,
+    )
 
 
 def _scalar_summary(values: np.ndarray) -> _ScalarPosteriorSummary:
@@ -238,6 +332,163 @@ def _scalar_summary(values: np.ndarray) -> _ScalarPosteriorSummary:
         probability_positive=probability_positive,
         sign_stability=max(probability_positive, probability_negative),
         posterior=posterior,
+    )
+
+
+def _summary_stat(values: np.ndarray, axis: int, prototype_stat: str) -> np.ndarray:
+    if prototype_stat == "median":
+        return np.median(values, axis=axis)
+    if prototype_stat == "mean":
+        return np.mean(values, axis=axis, dtype=np.float64)
+    raise ValueError(f"unsupported prototype_stat={prototype_stat!r}")
+
+
+def _validate_compatible_sequences(sequences: Sequence[EvidenceSequence]) -> dict[str, slice]:
+    if not sequences:
+        raise ValueError("at least one evidence sequence is required")
+    first_slices = sequences[0].feature_slices
+    first_slice_signature = _slice_signature(first_slices)
+    first_dim = int(sequences[0].matrix.shape[1])
+    for index, sequence in enumerate(sequences):
+        if sequence.matrix.ndim != 2:
+            raise ValueError(f"evidence sequence {index} matrix must be 2D")
+        if sequence.matrix.shape[1] != first_dim:
+            raise ValueError("all evidence matrices must have the same input dimension")
+        if _slice_signature(sequence.feature_slices) != first_slice_signature:
+            raise ValueError("all evidence sequences must use matching feature slices")
+        if sequence.mask.ndim != 1 or sequence.mask.shape[0] != sequence.matrix.shape[0]:
+            raise ValueError(f"evidence sequence {index} mask does not match matrix time length")
+        if not np.any(sequence.mask):
+            raise ValueError(f"evidence sequence {index} has no valid frames")
+    return dict(first_slices)
+
+
+def _valid_training_matrix(sequences: Sequence[EvidenceSequence]) -> np.ndarray:
+    blocks = [
+        np.asarray(sequence.matrix[np.asarray(sequence.mask, dtype=bool)], dtype=np.float32)
+        for sequence in sequences
+    ]
+    return np.concatenate(blocks, axis=0)
+
+
+def _stable_scale(value: float, eps: float = 1e-12) -> float:
+    if not np.isfinite(value) or abs(value) <= eps:
+        return 1.0
+    return float(value)
+
+
+def _fit_evidence_scaling(
+    sequences: Sequence[EvidenceSequence],
+    *,
+    mode: str,
+    feature_slices: dict[str, slice],
+) -> _EvidenceScaling:
+    training = _valid_training_matrix(sequences)
+    dim = int(training.shape[1])
+    mean = np.zeros(dim, dtype=np.float32)
+    scale = np.ones(dim, dtype=np.float32)
+
+    if mode == "none":
+        return _EvidenceScaling(mode=mode, mean=mean, scale=scale)
+    if mode == "standard":
+        mean = np.mean(training, axis=0, dtype=np.float64).astype(np.float32)
+        std = np.std(training, axis=0, dtype=np.float64).astype(np.float32)
+        std[~np.isfinite(std) | (std <= 1e-12)] = 1.0
+        return _EvidenceScaling(mode=mode, mean=mean, scale=std)
+    if mode not in {"group_l1", "group_l2"}:
+        raise ValueError(f"unsupported scaling mode={mode!r}")
+
+    for name in ("raw", "features", "dt"):
+        section = feature_slices[name]
+        if section.start == section.stop:
+            continue
+        block = training[:, section]
+        if mode == "group_l1":
+            norms = np.sum(np.abs(block), axis=1, dtype=np.float64)
+        else:
+            norms = np.linalg.norm(block.astype(np.float64, copy=False), axis=1)
+        block_scale = _stable_scale(float(np.mean(norms, dtype=np.float64)))
+        scale[section] = np.float32(block_scale)
+    return _EvidenceScaling(mode=mode, mean=mean, scale=scale)
+
+
+def _build_evidence_matrix(
+    sequence: EvidenceSequence,
+    *,
+    scaling: _EvidenceScaling | None = None,
+) -> np.ndarray:
+    matrix = np.asarray(sequence.matrix, dtype=np.float32)
+    if scaling is None or scaling.mode == "none":
+        return matrix.astype(np.float32, copy=True)
+    scaled = matrix.astype(np.float32, copy=True)
+    if scaling.mode == "standard":
+        scaled -= scaling.mean
+    scaled /= scaling.scale
+    return scaled
+
+
+def _fit_evidence_prototypes(
+    sequences: Sequence[EvidenceSequence],
+    labels: Sequence[Any],
+    *,
+    n_samples: int,
+    prototype_stat: str,
+    scaling: str,
+    frame_weighting: str,
+    random_state: int,
+) -> _EvidencePosterior:
+    if len(sequences) != len(labels):
+        raise ValueError("sequences and labels must have the same length")
+    feature_slices = _validate_compatible_sequences(sequences)
+    fitted_scaling = _fit_evidence_scaling(
+        sequences, mode=scaling, feature_slices=feature_slices
+    )
+    scaled_sequences = [
+        _build_evidence_matrix(sequence, scaling=fitted_scaling) for sequence in sequences
+    ]
+    prototype_labels = np.asarray(sorted(set(labels)), dtype=object)
+    prototypes = np.empty(
+        (int(n_samples), int(prototype_labels.size), int(scaled_sequences[0].shape[1])),
+        dtype=np.float32,
+    )
+    rng = np.random.default_rng(random_state)
+
+    for label_index, label in enumerate(prototype_labels):
+        member_indices = [index for index, item in enumerate(labels) if item == label]
+        if not member_indices:
+            raise ValueError(f"label {label!r} has no sequences")
+        if frame_weighting == "sample_equal":
+            summaries = []
+            for index in member_indices:
+                valid = np.asarray(sequences[index].mask, dtype=bool)
+                summaries.append(_summary_stat(scaled_sequences[index][valid], 0, prototype_stat))
+            label_values = np.asarray(summaries, dtype=np.float32)
+        elif frame_weighting == "frame_equal":
+            label_values = np.concatenate(
+                [
+                    scaled_sequences[index][np.asarray(sequences[index].mask, dtype=bool)]
+                    for index in member_indices
+                ],
+                axis=0,
+            ).astype(np.float32, copy=False)
+        else:
+            raise ValueError(f"unsupported frame_weighting={frame_weighting!r}")
+
+        if label_values.size == 0:
+            raise ValueError(f"label {label!r} has no valid evidence values")
+        for draw in range(int(n_samples)):
+            draw_indices = rng.integers(0, label_values.shape[0], size=label_values.shape[0])
+            prototypes[draw, label_index] = np.asarray(
+                _summary_stat(label_values[draw_indices], 0, prototype_stat),
+                dtype=np.float32,
+            )
+
+    return _EvidencePosterior(
+        prototypes=prototypes,
+        prototype_labels=prototype_labels,
+        n_samples=int(n_samples),
+        feature_slices=feature_slices,
+        scaling=fitted_scaling,
     )
 
 
@@ -317,8 +568,8 @@ def _label_index(posterior: Any, label: Any, name: str) -> int:
 
 
 def _low_memory_hyb_summary_cuda(
-    sequence: RawFeatSequence,
-    posterior: Any,
+    sequence: EvidenceSequence,
+    posterior: _EvidencePosterior,
     *,
     target_index: int,
     rival_index: int,
@@ -328,7 +579,7 @@ def _low_memory_hyb_summary_cuda(
     eps: float,
 ) -> _LowMemoryMethodSummary:
     cp = _ensure_cuda_backend()
-    matrix = build_rawfeat_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
+    matrix = _build_evidence_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
     mask = np.asarray(sequence.mask, dtype=bool)
     valid_matrix_cpu = np.ascontiguousarray(matrix[mask], dtype=np.float32)
     del matrix, mask
@@ -435,8 +686,8 @@ def _low_memory_hyb_summary_cuda(
 
 
 def _low_memory_hyb_summary(
-    sequence: RawFeatSequence,
-    posterior: Any,
+    sequence: EvidenceSequence,
+    posterior: _EvidencePosterior,
     *,
     target_label: Any,
     rival_label: Any,
@@ -466,7 +717,7 @@ def _low_memory_hyb_summary(
     # fpde validates and applies the training-fitted transform once.  The
     # coordinate matrix is then held as float32; all reported sums use float64.
     xp = np
-    matrix = build_rawfeat_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
+    matrix = _build_evidence_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
     mask = np.asarray(sequence.mask, dtype=bool)
     valid_matrix_cpu = np.ascontiguousarray(matrix[mask], dtype=np.float32)
     del matrix, mask
@@ -540,6 +791,86 @@ def _low_memory_hyb_summary(
 
     del valid_matrix, row_norms
     return _LowMemoryMethodSummary(
+        evidence=_scalar_summary(evidence_draws),
+        raw_group_attribution=_scalar_summary(raw_draws),
+        feature_group_attribution=_scalar_summary(feature_draws),
+        dt_group_attribution=_scalar_summary(dt_draws),
+        exactness_residuals=exactness_draws,
+    )
+
+
+def _coordinate_hyb_summary(
+    sequence: EvidenceSequence,
+    posterior: _EvidencePosterior,
+    *,
+    target_label: Any,
+    rival_label: Any,
+    lambda_hyb: float,
+    normalize: str,
+    eps: float = 1e-12,
+) -> _CoordinateMethodSummary:
+    target_index = _label_index(posterior, target_label, "target_label")
+    rival_index = _label_index(posterior, rival_label, "rival_label")
+    if target_label == rival_label:
+        raise ValueError("target_label and rival_label must differ")
+
+    matrix = _build_evidence_matrix(sequence, scaling=posterior.scaling).astype(np.float32)
+    mask = np.asarray(sequence.mask, dtype=bool)
+    valid_matrix = np.ascontiguousarray(matrix[mask], dtype=np.float32)
+    n_draws = int(posterior.n_samples)
+    attributions = np.zeros((n_draws, matrix.shape[0], matrix.shape[1]), dtype=np.float32)
+    evidence_draws = np.empty(n_draws, dtype=np.float64)
+    raw_draws = np.empty(n_draws, dtype=np.float64)
+    feature_draws = np.empty(n_draws, dtype=np.float64)
+    dt_draws = np.empty(n_draws, dtype=np.float64)
+    exactness_draws = np.empty(n_draws, dtype=np.float64)
+    raw_slice = posterior.feature_slices["raw"]
+    feature_slice = posterior.feature_slices["features"]
+    dt_slice = posterior.feature_slices["dt"]
+    row_norms = np.linalg.norm(valid_matrix, axis=1).astype(np.float32, copy=False)
+
+    for draw in range(n_draws):
+        target = np.asarray(posterior.prototypes[draw, target_index], dtype=np.float32)
+        rival = np.asarray(posterior.prototypes[draw, rival_index], dtype=np.float32)
+
+        attribution = valid_matrix * (target - rival)
+        attribution *= np.float32(2.0)
+        attribution += rival * rival - target * target
+        if normalize == "l1":
+            diff_scale = float(np.sum(np.abs(attribution), dtype=np.float64) + eps)
+        else:
+            diff_scale = 1.0
+        attribution *= np.float32(lambda_hyb / diff_scale)
+
+        target_norm = float(np.linalg.norm(target))
+        rival_norm = float(np.linalg.norm(rival))
+        cosine_direction = target / np.float32(target_norm + eps)
+        cosine_direction -= rival / np.float32(rival_norm + eps)
+        cosine_attribution = valid_matrix * cosine_direction
+        cosine_attribution /= row_norms[:, None] + np.float32(eps)
+        if normalize == "l1":
+            cosine_scale = float(np.sum(np.abs(cosine_attribution), dtype=np.float64) + eps)
+        else:
+            cosine_scale = 1.0
+        cosine_attribution *= np.float32((1.0 - lambda_hyb) / cosine_scale)
+        attribution += cosine_attribution
+
+        attributions[draw, mask, :] = attribution
+        evidence = float(np.sum(attribution, dtype=np.float64))
+        evidence_draws[draw] = evidence
+        raw_draws[draw] = float(np.sum(attribution[:, raw_slice], dtype=np.float64))
+        feature_draws[draw] = float(np.sum(attribution[:, feature_slice], dtype=np.float64))
+        dt_draws[draw] = float(np.sum(attribution[:, dt_slice], dtype=np.float64))
+        exactness_draws[draw] = evidence - float(np.sum(attribution, dtype=np.float64))
+
+    probability_positive = np.mean(attributions > 0.0, axis=0)
+    probability_negative = np.mean(attributions < 0.0, axis=0)
+    return _CoordinateMethodSummary(
+        posterior_mean=np.mean(attributions, axis=0, dtype=np.float64),
+        credible_interval_lower=np.quantile(attributions, 0.025, axis=0),
+        credible_interval_upper=np.quantile(attributions, 0.975, axis=0),
+        probability_positive=probability_positive,
+        sign_stability=np.maximum(probability_positive, probability_negative),
         evidence=_scalar_summary(evidence_draws),
         raw_group_attribution=_scalar_summary(raw_draws),
         feature_group_attribution=_scalar_summary(feature_draws),
@@ -682,13 +1013,17 @@ def run(args: argparse.Namespace) -> int:
             timing_rows.append(timing_row)
             continue
 
-        loaded: list[tuple[pd.Series, RawFeatSequence, np.ndarray, Path]] = []
+        loaded: list[tuple[pd.Series, EvidenceSequence, Path]] = []
         load_start = time.perf_counter()
         for _, row in group.iterrows():
             path = _resolve_npz_path(row["rawfeat_npz_path"], input_csv)
             try:
-                sequence, frame_starts = _load_sequence(path, args.max_frames_for_debug)
-                loaded.append((row, sequence, frame_starts, path))
+                sequence = _load_sequence(
+                    path,
+                    evidence_input=args.evidence_input,
+                    max_frames_for_debug=args.max_frames_for_debug,
+                )
+                loaded.append((row, sequence, path))
             except Exception as exc:  # isolate malformed samples without hiding them
                 errors.append({
                     "cover_group_id": group_id, "sample_id": row["sample_id"],
@@ -711,7 +1046,7 @@ def run(args: argparse.Namespace) -> int:
         sequences = [item[1] for item in loaded]
         try:
             fit_start = time.perf_counter()
-            posterior = fit_bayesian_rawfeat_prototypes(
+            posterior = _fit_evidence_prototypes(
                 sequences,
                 loaded_labels,
                 n_samples=args.n_samples,
@@ -743,8 +1078,7 @@ def run(args: argparse.Namespace) -> int:
         del sequences
         explain_start = time.perf_counter()
         for item_index, item in enumerate(sample_items):
-            row, sequence, frame_starts, path = item
-            result = None
+            row, sequence, path = item
             method = None
             exact = None
             group_sum_residual = None
@@ -753,8 +1087,7 @@ def run(args: argparse.Namespace) -> int:
                     args.save_coordinate_summary
                     or (args.save_attributions and not args.low_memory and args.device == "cpu")
                 )
-                if (args.low_memory or args.device == "cuda") and not coordinate_summary_requested:
-                    result = None
+                if not coordinate_summary_requested:
                     method = _low_memory_hyb_summary(
                         sequence,
                         posterior,
@@ -766,7 +1099,7 @@ def run(args: argparse.Namespace) -> int:
                         draw_chunk_size=args.draw_chunk_size,
                     )
                 else:
-                    result = bayesian_rawfeat_dynamic_fpde_explain_one(
+                    method = _coordinate_hyb_summary(
                         sequence,
                         posterior,
                         target_label=args.target_label,
@@ -774,7 +1107,6 @@ def run(args: argparse.Namespace) -> int:
                         lambda_hyb=args.lambda_hyb,
                         normalize=args.normalize,
                     )
-                    method = result.hyb
                 exact = np.asarray(method.exactness_residuals, dtype=float)
                 group_sum_residual = (
                     np.asarray(method.raw_group_attribution.posterior)
@@ -811,20 +1143,29 @@ def run(args: argparse.Namespace) -> int:
                     "max_abs_exactness_residual": audit["max_abs_exactness_residual"],
                     "mean_abs_exactness_residual": audit["mean_abs_exactness_residual"],
                     "max_abs_group_sum_residual": audit["max_abs_group_sum_residual"],
-                    "T": int(sequence.raw.shape[0]),
-                    "D": int(sequence.raw.shape[1] + sequence.features.shape[1] + 1),
-                    "raw_dim": int(sequence.raw.shape[1]),
-                    "feature_dim": int(sequence.features.shape[1]),
-                    "dt_dim": 1,
+                    "T": int(sequence.matrix.shape[0]),
+                    "D": int(sequence.matrix.shape[1]),
+                    "evidence_input": args.evidence_input,
+                    "input_dim": int(sequence.matrix.shape[1]),
+                    "raw_dim": _slice_dim(sequence.feature_slices, "raw"),
+                    "feature_dim": _slice_dim(sequence.feature_slices, "features"),
+                    "dt_dim": _slice_dim(sequence.feature_slices, "dt"),
+                    "raw_included": bool(_slice_dim(sequence.feature_slices, "raw") > 0),
+                    "dt_included": bool(_slice_dim(sequence.feature_slices, "dt") > 0),
+                    "uses_raw_for_evidence": bool(_slice_dim(sequence.feature_slices, "raw") > 0),
                     "rawfeat_npz_path": str(path),
                 }
                 group_rows.append(sample_row)
                 group_audits.append(audit)
                 group_evidence_posteriors.append(np.asarray(method.evidence_posterior, dtype=float))
                 if coordinate_summary_requested:
-                    assert result is not None
                     _save_attribution(
-                        output_dir, group_id, row["sample_id"], method, result.mask, frame_starts
+                        output_dir,
+                        group_id,
+                        row["sample_id"],
+                        method,
+                        sequence.mask,
+                        sequence.frame_starts,
                     )
             except Exception as exc:
                 errors.append({
@@ -834,7 +1175,7 @@ def run(args: argparse.Namespace) -> int:
                 })
             finally:
                 sample_items[item_index] = None
-                del result, method, exact, group_sum_residual, sequence, frame_starts, item
+                del method, exact, group_sum_residual, sequence, item
                 gc.collect()
                 if args.device == "cuda" and args.free_cuda_memory_pool:
                     _free_cuda_memory_pool()
@@ -877,18 +1218,21 @@ def run(args: argparse.Namespace) -> int:
     _write_csv(results_dir / "timing_summary.csv", timing_rows, TIMING_COLUMNS)
 
     config = vars(args).copy()
+    coordinate_summary_saved = bool(
+        args.save_coordinate_summary
+        or (args.save_attributions and not args.low_memory and args.device == "cpu")
+    )
     config.update({
         "input_csv": str(input_csv), "output_dir": str(output_dir),
         "interpretation": "group-local Like-vs-Dislike prototype-evidence decomposition",
         "causal_explanation": False, "ground_truth_attribution": False,
-        "uses_original_song_data": False, "global_temporal_resampling": False,
-        "low_memory_streaming": bool(
-            (args.low_memory or args.device == "cuda") and not args.save_coordinate_summary
-        ),
-        "coordinate_summary_saved": bool(
-            args.save_coordinate_summary
-            or (args.save_attributions and not args.low_memory and args.device == "cpu")
-        ),
+        "evidence_input": args.evidence_input,
+        "uses_raw_for_evidence": bool(args.evidence_input == "rawfeat"),
+        "uses_raw_for_generation": False,
+        "uses_original_song_data": False,
+        "global_temporal_resampling": False,
+        "low_memory_streaming": not coordinate_summary_saved,
+        "coordinate_summary_saved": coordinate_summary_saved,
         "debug_frame_truncation": args.max_frames_for_debug is not None,
         "debug_only_warning": (
             "--max-frames-for-debug truncates native sequences and must not be used for final reported results"
